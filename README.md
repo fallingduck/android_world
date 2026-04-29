@@ -104,6 +104,13 @@ to try open-source apps, i.e. not included with Android OS, please run
 
 **Note on Model Cost:** The `minimal_task_runner.py` script uses a legacy model `gpt-4-turbo-2024-04-09` by default. This model can be expensive. For serious usage, you can switch to a more cost-effective model, by modifying the `model_name` in the script.
 
+## Redroid support
+
+This repository also includes an experimental `redroid` backend that can talk
+to a container over ADB without relying on Android Emulator console ports.
+See `docs/redroid_runbook.md` for setup, runtime flags, supported task classes,
+and current limitations.
+
 ## Docker Support (Experimental)
 
 AndroidWorld now offers Docker support. This allows you to run the Android
