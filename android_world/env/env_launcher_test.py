@@ -21,6 +21,7 @@ from android_env.components import config_classes
 from android_world.env import android_world_controller
 from android_world.env import env_launcher
 from android_world.env import interface
+from android_world.env import redroid_env
 
 
 class EnvLauncherTest(absltest.TestCase):
@@ -56,7 +57,55 @@ class EnvLauncherTest(absltest.TestCase):
             ),
         )
     )
-    mock_controller.assert_called_with(mock_android_env)
+    mock_controller.assert_called_with(
+        mock_android_env,
+        a11y_method=android_world_controller.A11yMethod.A11Y_FORWARDER_APP,
+        install_a11y_forwarding_app=True,
+        device_mode=env_launcher.DeviceMode.EMULATOR,
+        console_port=5556,
+        adb_path="some_adb_path",
+        grpc_port=8554,
+        adb_device_name=None,
+    )
+    mock_async_android_env.assert_called_with(mock_controller.return_value)
+
+  @mock.patch.object(interface, "AsyncAndroidEnv", autospec=True)
+  @mock.patch.object(
+      android_world_controller, "AndroidWorldController", autospec=True
+  )
+  @mock.patch.object(redroid_env, "RedroidEnv", autospec=True)
+  def test_get_env_redroid(
+      self,
+      mock_redroid_env,
+      mock_controller,
+      mock_async_android_env,
+  ):
+    mock_android_env = mock.create_autospec(env_interface.AndroidEnvInterface)
+    mock_redroid_env.return_value = mock_android_env
+
+    env_launcher._get_env(
+        console_port=5556,
+        adb_path="some_adb_path",
+        grpc_port=8554,
+        device_mode=env_launcher.DeviceMode.REDROID,
+        adb_device_name="localhost:5555",
+    )
+
+    mock_redroid_env.assert_called_with(
+        adb_path="some_adb_path",
+        device_name="localhost:5555",
+        adb_server_port=5037,
+    )
+    mock_controller.assert_called_with(
+        mock_android_env,
+        a11y_method=android_world_controller.A11yMethod.UIAUTOMATOR,
+        install_a11y_forwarding_app=False,
+        device_mode=env_launcher.DeviceMode.REDROID,
+        console_port=5556,
+        adb_path="some_adb_path",
+        grpc_port=8554,
+        adb_device_name="localhost:5555",
+    )
     mock_async_android_env.assert_called_with(mock_controller.return_value)
 
 

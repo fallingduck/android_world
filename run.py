@@ -36,6 +36,7 @@ from android_world.agents import m3a
 from android_world.agents import random_agent
 from android_world.agents import seeact
 from android_world.agents import t3a
+from android_world.env import android_world_controller
 from android_world.env import env_launcher
 from android_world.env import interface
 
@@ -103,6 +104,31 @@ _DEVICE_CONSOLE_PORT = flags.DEFINE_integer(
     ' retrieved by looking at the output of `adb devices`. In general, the'
     ' first connected device is port 5554, the second is 5556, and'
     ' so on.',
+)
+_DEVICE_MODE = flags.DEFINE_enum(
+    'device_mode',
+    env_launcher.DeviceMode.EMULATOR.value,
+    [mode.value for mode in env_launcher.DeviceMode],
+    'Which device backend to use.',
+)
+_ADB_DEVICE_NAME = flags.DEFINE_string(
+    'adb_device_name',
+    '',
+    'Explicit adb serial/endpoint. Required for redroid mode.',
+)
+_GRPC_PORT = flags.DEFINE_integer(
+    'grpc_port',
+    8554,
+    'The port for gRPC communication with the emulator backend.',
+)
+_A11Y_METHOD = flags.DEFINE_string(
+    'a11y_method',
+    '',
+    'Optional accessibility retrieval method override. Empty means "do not'
+    ' override" (the controller picks a sensible default per device_mode).'
+    ' Valid non-empty values: '
+    + '|'.join(m.value for m in android_world_controller.A11yMethod)
+    + '.',
 )
 
 _SUITE_FAMILY = flags.DEFINE_enum(
@@ -225,10 +251,19 @@ def _get_agent(
 
 def _main() -> None:
   """Runs eval suite and gets rewards back."""
+  a11y_method = (
+      android_world_controller.A11yMethod(_A11Y_METHOD.value)
+      if _A11Y_METHOD.value
+      else None
+  )
   env = env_launcher.load_and_setup_env(
       console_port=_DEVICE_CONSOLE_PORT.value,
       emulator_setup=_EMULATOR_SETUP.value,
       adb_path=_ADB_PATH.value,
+      grpc_port=_GRPC_PORT.value,
+      device_mode=_DEVICE_MODE.value,
+      adb_device_name=_ADB_DEVICE_NAME.value or None,
+      a11y_method=a11y_method,
   )
 
   n_task_combinations = _N_TASK_COMBINATIONS.value
