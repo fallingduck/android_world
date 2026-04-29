@@ -29,7 +29,13 @@ SNAPSHOT_DATA = "/data/data/android_world/snapshots"
 AUDIORECORDER_DATA = "/storage/emulated/0/Android/data/com.dimowner.audiorecorder/files/Music/records"
 DOWNLOAD_DATA = "/storage/emulated/0/Download"
 GALLERY_DATA = "/sdcard/DCIM"
-MARKOR_DATA = "/storage/emulated/0/Documents/Markor"
+# NOTE: Markor v0.146 on AOSP / redroid creates its data directory with a
+# lowercase name (``markor``), whereas upstream AndroidWorld historically
+# assumed the Google-signed Markor build uses ``Markor``. We default to the
+# lowercase form for the redroid backend. If running against a Google
+# Emulator image with the capitalized folder, override this constant or
+# (TODO: Phase 2) add runtime detection via ``file_utils`` at task init.
+MARKOR_DATA = "/storage/emulated/0/Documents/markor"
 MUSIC_DATA = "/sdcard/Music"
 OSMAND_DATA = "/storage/emulated/0/Android/data/net.osmand/files"
 PHOTOS_DATA = "/sdcard/Pictures"
