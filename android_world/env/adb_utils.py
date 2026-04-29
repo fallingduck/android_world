@@ -169,6 +169,25 @@ _PATTERN_TO_ACTIVITY = immutabledict.immutabledict({
 })
 # pylint: enable=line-too-long
 
+# Alternate activity candidates for apps whose default package differs between
+# a Google-signed build (e.g. `com.google.android.*`) and the AOSP build
+# shipped on redroid / plain AOSP devices. Ordered by preference; the first
+# candidate whose package is actually installed wins. If none match, the
+# default activity in `_PATTERN_TO_ACTIVITY` is used as-is.
+#
+# Keep this map small: add an entry only when a real platform difference
+# breaks `launch_app`. See docs/HANDOFF-AndroidWorld接入Redroid.md §10.9.
+_FALLBACK_ACTIVITIES: dict[str, tuple[str, ...]] = {
+    'files': (
+        # Google Files Go (GMS full install).
+        'com.google.android.apps.nbu.files/com.google.android.apps.nbu.files.home.HomeActivity',
+        # Google DocumentsUI (older "Files by Google" variant).
+        'com.google.android.documentsui/com.android.documentsui.files.FilesActivity',
+        # AOSP DocumentsUI (redroid default).
+        'com.android.documentsui/com.android.documentsui.files.FilesActivity',
+    ),
+}
+
 _ORIENTATIONS = {
     'portrait': '0',
     'landscape': '1',
@@ -678,6 +697,50 @@ def _launch_default_app(
   return response
 
 
+def _resolve_fallback_activity(
+    app_name: str,
+    env: env_interface.AndroidEnvInterface,
+) -> Optional[str]:
+  """Returns the first `_FALLBACK_ACTIVITIES` candidate whose package is installed.
+
+  Args:
+    app_name: Key into `_FALLBACK_ACTIVITIES` (already lower-cased).
+    env: The environment used to query installed packages.
+
+  Returns:
+    A `package/activity` string if any candidate matches, else None. On any
+    error while listing packages, returns None so the caller can fall back to
+    the default activity from `_PATTERN_TO_ACTIVITY`.
+  """
+  candidates = _FALLBACK_ACTIVITIES.get(app_name)
+  if not candidates:
+    return None
+  try:
+    installed = set(get_all_package_names(env))
+  except Exception:  # pylint: disable=broad-except
+    logging.warning(
+        'Failed to list packages while resolving fallback for %r; '
+        'using default activity.',
+        app_name,
+    )
+    return None
+  for activity in candidates:
+    package = extract_package_name(activity)
+    if package in installed:
+      logging.info(
+          'Fallback activity for %r resolved to %r (installed).',
+          app_name,
+          activity,
+      )
+      return activity
+  logging.warning(
+      'No fallback candidate for %r is installed (tried %s).',
+      app_name,
+      [extract_package_name(a) for a in candidates],
+  )
+  return None
+
+
 def launch_app(
     app_name: str,
     env: env_interface.AndroidEnvInterface,
@@ -695,6 +758,13 @@ def launch_app(
 
   if app_name in _DEFAULT_URIS:
     _launch_default_app(app_name, env)
+    return app_name
+
+  # If this app has platform-specific package alternatives (e.g. Google vs
+  # AOSP), prefer whichever candidate is actually installed on the device.
+  fallback = _resolve_fallback_activity(app_name.lower(), env)
+  if fallback is not None:
+    start_activity(fallback, extra_args=[], env=env, timeout_sec=5)
     return app_name
 
   activity = get_adb_activity(app_name)
@@ -1320,6 +1390,10 @@ def call_emulator(
   Returns:
     adb_pb2.AdbResponse: A response object containing the ADB operation result.
   """
+  if getattr(env, 'device_mode', '') == 'redroid':
+    raise NotImplementedError(
+        'Incoming call simulation is not supported in redroid mode.'
+    )
   escaped_phone_number = re.sub(r'[^0-9+]', '', phone_number)
   adb_args = ['emu', 'gsm', 'call', f'{escaped_phone_number}']
   response = issue_generic_request(adb_args, env, timeout_sec)
