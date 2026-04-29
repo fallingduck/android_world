@@ -310,12 +310,20 @@ class Gpt4Wrapper(LlmWrapper, MultimodalLlmWrapper):
           },
       })
 
+    # Allow overriding the OpenAI-compatible endpoint (e.g. Tencent LKEAP,
+    # Azure OpenAI, local gateway). Accept either a full URL ending in
+    # `/chat/completions` or a base URL without the suffix.
+    base = os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')
+    if base.endswith('/chat/completions'):
+      url = base
+    else:
+      url = base + '/chat/completions'
     counter = self.max_retry
     wait_seconds = self.RETRY_WAITING_SECONDS
     while counter > 0:
       try:
         response = requests.post(
-            'https://api.openai.com/v1/chat/completions',
+            url,
             headers=headers,
             json=payload,
         )

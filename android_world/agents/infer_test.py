@@ -131,6 +131,72 @@ class InferTest(absltest.TestCase):
     gpt4v.predict_mm("fake prompt", [])
     self.mock_sleep.assert_called_once()
 
+  def _make_ok_response(self):
+    resp = requests.Response()
+    resp.status_code = 200
+    resp._content = b'{"choices": [{"message": {"content": "ok"}}]}'
+    return resp
+
+  def test_gpt4v_default_url(self):
+    os.environ.pop("OPENAI_BASE_URL", None)
+    llm = infer.Gpt4Wrapper(model_name="gpt-4-turbo-2024-04-09")
+    self.mock_post.return_value = self._make_ok_response()
+    llm.predict_mm("fake prompt", [])
+    called_url = self.mock_post.call_args.args[0]
+    self.assertEqual(called_url, "https://api.openai.com/v1/chat/completions")
+
+  def test_gpt4v_base_url_override_preserves_full_url(self):
+    # When OPENAI_BASE_URL already ends in `/chat/completions`, the wrapper
+    # must use it as-is instead of appending a second suffix. Regression guard
+    # for the LKEAP / Venus llmproxy case where users supply the full URL.
+    os.environ["OPENAI_BASE_URL"] = (
+        "http://v2.open.venus.oa.com/llmproxy/chat/completions"
+    )
+    try:
+      llm = infer.Gpt4Wrapper(model_name="glm-5")
+      self.mock_post.return_value = self._make_ok_response()
+      llm.predict_mm("fake prompt", [])
+      called_url = self.mock_post.call_args.args[0]
+      self.assertEqual(
+          called_url,
+          "http://v2.open.venus.oa.com/llmproxy/chat/completions",
+      )
+    finally:
+      os.environ.pop("OPENAI_BASE_URL", None)
+
+  def test_gpt4v_base_url_override_appends_suffix(self):
+    # When OPENAI_BASE_URL is a bare base URL (no `/chat/completions` tail),
+    # the wrapper must append `/chat/completions` exactly once.
+    os.environ["OPENAI_BASE_URL"] = (
+        "https://api.lkeap.cloud.tencent.com/coding/v3"
+    )
+    try:
+      llm = infer.Gpt4Wrapper(model_name="glm-5")
+      self.mock_post.return_value = self._make_ok_response()
+      llm.predict_mm("fake prompt", [])
+      called_url = self.mock_post.call_args.args[0]
+      self.assertEqual(
+          called_url,
+          "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions",
+      )
+    finally:
+      os.environ.pop("OPENAI_BASE_URL", None)
+
+  def test_gpt4v_base_url_full_override_not_duplicated(self):
+    os.environ["OPENAI_BASE_URL"] = (
+        "https://api.example.com/v1/chat/completions"
+    )
+    try:
+      llm = infer.Gpt4Wrapper(model_name="glm-5")
+      self.mock_post.return_value = self._make_ok_response()
+      llm.predict_mm("fake prompt", [])
+      called_url = self.mock_post.call_args.args[0]
+      self.assertEqual(
+          called_url, "https://api.example.com/v1/chat/completions"
+      )
+    finally:
+      os.environ.pop("OPENAI_BASE_URL", None)
+
 
 if __name__ == "__main__":
   absltest.main()

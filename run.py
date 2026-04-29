@@ -45,6 +45,29 @@ os.environ['GRPC_VERBOSITY'] = 'ERROR'  # Only show errors
 os.environ['GRPC_TRACE'] = 'none'  # Disable tracing
 
 
+def _load_local_env() -> None:
+  """Loads KEY=VALUE lines from ./.env.local if present."""
+  path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env.local')
+  if not os.path.isfile(path):
+    return
+  try:
+    with open(path, 'r', encoding='utf-8') as f:
+      for raw in f:
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+          continue
+        key, _, value = line.partition('=')
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+          os.environ[key] = value
+  except OSError:
+    pass
+
+
+_load_local_env()
+
+
 def _find_adb_directory() -> str:
   """Returns the directory where adb is located."""
   potential_paths = [
@@ -136,6 +159,12 @@ _FIXED_TASK_SEED = flags.DEFINE_boolean(
     'Whether to use the same task seed when running multiple task combinations'
     ' (n_task_combinations > 1).',
 )
+_MODEL_NAME = flags.DEFINE_string(
+    'model_name',
+    os.environ.get('OPENAI_MODEL_NAME', 'gpt-4-turbo-2024-04-09'),
+    'Model name passed to the LLM wrapper. Defaults to OPENAI_MODEL_NAME env'
+    ' var if set.',
+)
 
 
 # MiniWoB is very lightweight and new screens/View Hierarchy load quickly.
@@ -172,9 +201,9 @@ def _get_agent(
     )
   # GPT.
   elif _AGENT_NAME.value == 't3a_gpt4':
-    agent = t3a.T3A(env, infer.Gpt4Wrapper('gpt-4-turbo-2024-04-09'))
+    agent = t3a.T3A(env, infer.Gpt4Wrapper(_MODEL_NAME.value))
   elif _AGENT_NAME.value == 'm3a_gpt4v':
-    agent = m3a.M3A(env, infer.Gpt4Wrapper('gpt-4-turbo-2024-04-09'))
+    agent = m3a.M3A(env, infer.Gpt4Wrapper(_MODEL_NAME.value))
   # SeeAct.
   elif _AGENT_NAME.value == 'seeact':
     agent = seeact.SeeAct(env)
