@@ -14,24 +14,52 @@
 
 """Launches the environment used in the benchmark."""
 
+import enum
 import platform
+from typing import Optional
 
 from absl import logging
 from android_world.env import android_world_controller
 from android_world.env import interface
-from android_world.env.setup_device import setup
 from android_world.utils import datetime_utils
 
 
 # AndroidWorld is tested and developed on Pixel 6 with API 33. Other
-# configurations may be supported, but are not yet tested.
+# configurations may be supported, but are not tested.
 _ANDROID_WORLD_API_LEVEL = 33
 
 
+class DeviceMode(str, enum.Enum):
+  EMULATOR = 'emulator'
+  REDROID = 'redroid'
+  AGENTRUNTIME = 'agentruntime'
+
+
+def _normalize_device_mode(device_mode: str | DeviceMode) -> DeviceMode:
+  if isinstance(device_mode, DeviceMode):
+    return device_mode
+  return DeviceMode(device_mode)
+
+
 def _get_env(
-    console_port: int, adb_path: str, grpc_port: int
+    console_port: int,
+    adb_path: str,
+    grpc_port: int,
+    device_mode: str | DeviceMode = DeviceMode.EMULATOR,
+    adb_device_name: str | None = None,
+    a11y_method: android_world_controller.A11yMethod | None = None,
+    agentruntime_config=None,
 ) -> interface.AsyncEnv:
   """Creates an AsyncEnv by connecting to an existing Android environment."""
+  device_mode = _normalize_device_mode(device_mode)
+
+  if device_mode == DeviceMode.AGENTRUNTIME:
+    # Import lazily so that Appium / E2B deps are optional for users who only
+    # use the emulator or redroid backends.
+    from android_world.env.agentruntime import appium_controller as ac  # pylint: disable=g-import-not-at-top
+    controller = ac.create_appium_controller(agentruntime_config)
+    return interface.AsyncAndroidEnv(controller)
+
   controller = android_world_controller.get_controller(
       console_port, adb_path, grpc_port
   )
@@ -87,6 +115,7 @@ def setup_env(
   _increase_file_descriptor_limit()
   if emulator_setup:
     logging.info('Setting up apps on the emulator.')
+    from android_world.env.setup_device import setup  # pylint: disable=g-import-not-at-top
     setup.setup_apps(env)
   if freeze_datetime:
     logging.info('Freezing datetime.')
@@ -99,6 +128,10 @@ def load_and_setup_env(
     freeze_datetime: bool = True,
     adb_path: str = android_world_controller.DEFAULT_ADB_PATH,
     grpc_port: int = 8554,
+    device_mode: str | DeviceMode = DeviceMode.EMULATOR,
+    adb_device_name: str | None = None,
+    a11y_method: android_world_controller.A11yMethod | None = None,
+    agentruntime_config=None,
 ) -> interface.AsyncEnv:
   """Create environment with `get_env()` and perform env setup and validation.
 
@@ -118,10 +151,41 @@ def load_and_setup_env(
       2023, to ensure consistent benchmarking.
     adb_path: The location of the adb binary.
     grpc_port: The port for gRPC communication with the emulator.
+    device_mode: Which device backend to use.
+    adb_device_name: Explicit adb serial/endpoint, required for redroid mode.
+    a11y_method: Optional accessibility retrieval method override.
+    agentruntime_config: ``AgentRuntimeConfig`` instance, required when
+      ``device_mode=DeviceMode.AGENTRUNTIME``.
 
   Returns:
     An interactable Android environment.
   """
-  env = _get_env(console_port, adb_path, grpc_port)
+  device_mode = _normalize_device_mode(device_mode)
+
+  # AgentRuntime mode skips emulator_setup and freeze_datetime by default
+  # because those operations rely on ADB-level device control that is not
+  # available in the Appium-only pipeline.
+  if device_mode == DeviceMode.AGENTRUNTIME:
+    env = _get_env(
+        console_port,
+        adb_path,
+        grpc_port,
+        device_mode=device_mode,
+        adb_device_name=adb_device_name,
+        a11y_method=a11y_method,
+        agentruntime_config=agentruntime_config,
+    )
+    _increase_file_descriptor_limit()
+    # Note: freeze_datetime and emulator_setup are intentionally skipped for
+    # agentruntime mode.  Time control can be attempted through mobile:shell,
+    # but is not guaranteed to work; tasks that are time-sensitive will need
+    # individual handling.
+    return env
+
+  env = _get_env(
+      console_port,
+      adb_path,
+      grpc_port,
+  )
   setup_env(env, emulator_setup, freeze_datetime)
   return env

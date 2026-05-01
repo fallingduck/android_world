@@ -18,3 +18,7 @@ pytest
 requests
 tenacity
 termcolor
+# AgentRuntime / E2B sandbox backend
+e2b==2.8.1
+Appium-Python-Client==5.2.4
+httpx==0.28.1

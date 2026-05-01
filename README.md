@@ -91,9 +91,11 @@ o
 
 ## Quickstart
 
+### Option A: Android Emulator (local)
+
 Run the `minimal_task_runner.py` script to see the basic mechanics of
 AndroidWorld components. It initializes the environment, sets up a task, and
-runs the default agent, M3A, on it.
+runs the default agent on it.
 ```bash
 python minimal_task_runner.py --task=ContactsAddContact
 ```
@@ -103,6 +105,70 @@ to try open-source apps, i.e. not included with Android OS, please run
 `--perform_emulator_setup` in the script below.*
 
 **Note on Model Cost:** The `minimal_task_runner.py` script uses a legacy model `gpt-4-turbo-2024-04-09` by default. This model can be expensive. For serious usage, you can switch to a more cost-effective model, by modifying the `model_name` in the script.
+
+### Option B: AgentRuntime cloud sandbox
+
+AndroidWorld supports [TencentAGR](https://cloud.tencent.com/product/agr) cloud
+Android sandboxes as a drop-in replacement for the local emulator.  No Android
+Studio setup is required.
+
+1. Copy and fill in the configuration files:
+
+    ```bash
+    cp .env.example .env          # fill in E2B_API_KEY, E2B_DOMAIN, OPENAI_API_KEY, …
+    cp sandboxes_example.yaml sandboxes.yaml  # fill in your pre-created sandbox IDs
+    ```
+
+2. Smoke-test a single task:
+
+    ```bash
+    python minimal_task_runner.py \
+      --task=ContactsAddContact \
+      --device_mode=agentruntime \
+      --sandboxes_yaml=sandboxes.yaml
+    ```
+
+3. Run the full benchmark in parallel:
+
+    ```bash
+    python run.py \
+      --suite_family=android_world \
+      --agent_name=t3a_gpt4 \
+      --sandboxes_yaml=sandboxes.yaml
+    ```
+    When `--sandboxes_yaml` is provided, `execution_mode` is automatically set
+    to `parallel` and `sandbox_count` is derived from the number of sandbox IDs
+    listed in the file.
+
+**Key environment variables** (set in `.env` or exported in the shell):
+
+| Variable | Description |
+|---|---|
+| `E2B_API_KEY` | AGR API key |
+| `E2B_DOMAIN` | AGR service domain, e.g. `ap-chongqing.tencentags.com` |
+| `SANDBOX_TEMPLATE` | Template name when creating new sandboxes |
+| `SANDBOXES_YAML` | Path to a `sandboxes.yaml` file (alternative to `--sandboxes_yaml` flag) |
+| `OPENAI_API_KEY` | OpenAI-compatible API key |
+| `OPENAI_BASE_URL` | Custom base URL, e.g. `https://api.agrun.woa.com/v1` |
+| `OPENAI_MODEL_NAME` | Model name, e.g. `venus/gpt-4o` |
+
+## AgentRuntime sandbox pool
+
+For large-scale parallel evaluation, pre-create a pool of AGR sandboxes and
+list their IDs in `sandboxes.yaml`:
+
+```yaml
+# sandboxes.yaml
+sandbox_ids:
+  - <sandbox-id-1>
+  - <sandbox-id-2>
+  - <sandbox-id-3>
+```
+
+Pass `--sandboxes_yaml=sandboxes.yaml` to either `minimal_task_runner.py` or
+`run.py`.  The runner connects to those sandboxes (instead of creating new
+ones) and distributes tasks across them automatically.
+
 
 ## Docker Support (Experimental)
 
