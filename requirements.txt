@@ -22,3 +22,4 @@ termcolor
 e2b==2.8.1
 Appium-Python-Client==5.2.4
 httpx==0.28.1
+PyYAML==6.0.3

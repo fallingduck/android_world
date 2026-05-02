@@ -23,3 +23,18 @@ poetry.lock
 
 # PyCharm
 .idea
+
+# Local secrets (API keys, endpoint overrides). See .env.local.example.
+.env
+sandboxes.yaml
+
+# Local venv created by uv / python -m venv.
+.venv/
+
+# Local operational scripts that should not be committed
+# (see docs/HANDOFF-AndroidWorld接入Redroid.md §13.5).
+/keep_tunnel.sh
+/run_full_suite.sh
+
+# Assistant-generated working notes.
+./docs

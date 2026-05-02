@@ -100,7 +100,8 @@ class SandboxPool:
     cfg: ``AgentRuntimeConfig`` used to create / connect sandboxes.
       ``cfg.sandbox_count`` determines the pool size.
     artifacts_root: Root directory for per-sandbox artefact output.  Each
-      sandbox gets a sub-directory ``<artifacts_root>/sandbox_<i>/``.
+      sandbox gets a sub-directory named after its sandbox ID:
+      ``<artifacts_root>/<sandbox_id>/``.
   """
 
   def __init__(
@@ -178,19 +179,23 @@ class SandboxPool:
     controller = ac_lib.create_appium_controller(slot_cfg)
     env = interface.AsyncAndroidEnv(controller)
 
+    real_sandbox_id = controller._session.sandbox_id
+
     artefact_dir = None
     if self._artifacts_root:
       import os  # pylint: disable=g-import-not-at-top
-      artefact_dir = os.path.join(self._artifacts_root, f'sandbox_{idx}')
+      # Use the real sandbox ID as the directory name so outputs are easy
+      # to correlate with the sandbox that produced them.
+      artefact_dir = os.path.join(self._artifacts_root, real_sandbox_id)
       os.makedirs(artefact_dir, exist_ok=True)
 
     writer = artifacts_lib.ArtifactWriter(
         output_dir=artefact_dir,
-        sandbox_id=controller._session.sandbox_id,
+        sandbox_id=real_sandbox_id,
     )
 
     handle = SandboxHandle(
-        sandbox_id=controller._session.sandbox_id,
+        sandbox_id=real_sandbox_id,
         env=env,
         controller=controller,
         session=controller._session,

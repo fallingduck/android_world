@@ -468,11 +468,50 @@ def _run_parallel(agentruntime_cfg) -> None:
   n_total = len(results)
   n_success = sum(1 for r in results if r.is_successful == 1.0)
   n_error = sum(1 for r in results if r.error)
+
+  # Write details.json — one entry per task instance.
+  import json as _json  # pylint: disable=g-import-not-at-top
+  import datetime as _datetime  # pylint: disable=g-import-not-at-top
+
+  details = [r.to_dict() for r in results]
+
+  summary = {
+      'timestamp': _datetime.datetime.now().isoformat(),
+      'suite_family': _SUITE_FAMILY.value,
+      'agent_name': _AGENT_NAME.value,
+      'n_total': n_total,
+      'n_success': n_success,
+      'n_error': n_error,
+      'success_rate': round(n_success / n_total, 4) if n_total else 0.0,
+      'sandbox_count': agentruntime_cfg.sandbox_count,
+      'sandboxes': sorted({r.sandbox_id for r in results}),
+      'checkpoint_dir': checkpoint_dir,
+  }
+
+  try:
+    with open(
+        os.path.join(checkpoint_dir, 'summary.json'), 'w', encoding='utf-8'
+    ) as f:
+      _json.dump(summary, f, indent=2, default=str)
+    with open(
+        os.path.join(checkpoint_dir, 'details.json'), 'w', encoding='utf-8'
+    ) as f:
+      _json.dump(details, f, indent=2, default=str)
+  except OSError as exc:
+    logging.warning('Could not write summary/details JSON: %s', exc)
+
+  # Console summary table.
   print(
-      f'\n[Parallel] Finished.  '
-      f'{n_success}/{n_total} successful  '
-      f'({n_error} error(s)).  '
-      f'Results written to {checkpoint_dir}.'
+      f'\n[Parallel] ─── Benchmark complete ───────────────────────────\n'
+      f'  Suite      : {_SUITE_FAMILY.value}\n'
+      f'  Agent      : {_AGENT_NAME.value}\n'
+      f'  Tasks      : {n_total}  |  Success: {n_success}  |  Errors: {n_error}\n'
+      f'  Rate       : {summary["success_rate"]:.1%}\n'
+      f'  Output dir : {checkpoint_dir}\n'
+      f'    ├─ details.json   (per-task results)\n'
+      f'    ├─ summary.json   (aggregate stats)\n'
+      f'    └─ <sandbox_id>/  (per-sandbox logs & screenshots)\n'
+      f'──────────────────────────────────────────────────────────────'
   )
 
 
