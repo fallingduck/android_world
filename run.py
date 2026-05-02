@@ -197,7 +197,7 @@ _CHECKPOINT_DIR = flags.DEFINE_string(
 )
 _OUTPUT_PATH = flags.DEFINE_string(
     'output_path',
-    os.path.expanduser('~/android_world/runs'),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output', 'runs'),
     'The path to save results to if not resuming from a checkpoint is not'
     ' provided.',
 )
