@@ -40,3 +40,6 @@ sandboxes.yaml
 
 # Assistant-generated working notes.
 ./docs
+
+# Benchmark run outputs.
+/output/runs/
