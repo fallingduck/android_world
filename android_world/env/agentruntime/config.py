@@ -195,6 +195,9 @@ class AgentRuntimeConfig:
       cfg.dump_artifacts_dir = FLAGS.dump_artifacts_dir
     if FLAGS.sandboxes_yaml:
       cfg.sandbox_ids_file = FLAGS.sandboxes_yaml
+      # Sandboxes listed in a yaml file are pre-created by the user and must
+      # never be killed by this process.
+      cfg.keep_sandbox = True
 
     return cfg
 

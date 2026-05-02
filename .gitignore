@@ -31,6 +31,8 @@ sandboxes.yaml
 # Local venv created by uv / python -m venv.
 .venv/
 
+.codebuddy
+
 # Local operational scripts that should not be committed
 # (see docs/HANDOFF-AndroidWorld接入Redroid.md §13.5).
 /keep_tunnel.sh
