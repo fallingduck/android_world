@@ -259,5 +259,57 @@ class RegisterFlagsTest(absltest.TestCase):
     self.assertIn('sandboxes_yaml', flags.FLAGS)
 
 
+class AgentRuntimeConfigFromFlagsTest(absltest.TestCase):
+  """Tests for from_flags() — focus on the keep_sandbox fix."""
+
+  def setUp(self):
+    super().setUp()
+    config_lib.register_flags()
+    from absl import flags  # pylint: disable=g-import-not-at-top
+    # Mark flags as parsed so from_flags() can read flag values.
+    if not flags.FLAGS.is_parsed():
+      flags.FLAGS.mark_as_parsed()
+
+  def test_from_flags_sandboxes_yaml_sets_keep_sandbox(self):
+    """from_flags() with --sandboxes_yaml must set keep_sandbox=True.
+
+    Regression test for the bug where sandbox_ids_file was set but
+    keep_sandbox was left as False, causing pre-created sandboxes to be
+    killed at the end of a run.
+    """
+    from absl.testing import flagsaver  # pylint: disable=g-import-not-at-top
+
+    yaml_path = '/some/sandboxes.yaml'
+    env_vars = {
+        'E2B_DOMAIN': 'test.tencentags.com',
+        'E2B_API_KEY': 'test-key',
+    }
+    with mock.patch.dict(os.environ, env_vars, clear=False):
+      with flagsaver.flagsaver(sandboxes_yaml=yaml_path):
+        cfg = config_lib.AgentRuntimeConfig.from_flags()
+
+    self.assertEqual(cfg.sandbox_ids_file, yaml_path)
+    self.assertTrue(
+        cfg.keep_sandbox,
+        'keep_sandbox must be True when sandboxes_yaml is provided via flags',
+    )
+
+  def test_from_flags_no_sandboxes_yaml_keep_sandbox_default_false(self):
+    """Without --sandboxes_yaml, keep_sandbox defaults to False."""
+    from absl.testing import flagsaver  # pylint: disable=g-import-not-at-top
+
+    env_vars = {
+        'E2B_DOMAIN': 'test.tencentags.com',
+        'E2B_API_KEY': 'test-key',
+        'SANDBOX_TEMPLATE': 'android_world_test',
+    }
+    with mock.patch.dict(os.environ, env_vars, clear=False):
+      with flagsaver.flagsaver(sandboxes_yaml=None):
+        cfg = config_lib.AgentRuntimeConfig.from_flags()
+
+    self.assertIsNone(cfg.sandbox_ids_file)
+    self.assertFalse(cfg.keep_sandbox)
+
+
 if __name__ == '__main__':
   absltest.main()
