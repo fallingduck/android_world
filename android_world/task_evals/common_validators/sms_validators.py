@@ -14,6 +14,30 @@
 
 """Logic for validating an SMS has been sent."""
 
+# =============================================================================
+# 【修改说明】适配 redroid 环境下 SMS 数据库路径和清除方式。
+# 修改日期：2026-05-14
+#
+# 修改内容：
+#   1. mmssms.db 物理路径：按 device_mode 分别走不同路径。
+#      - Emulator: /data/data/com.android.providers.telephony/databases/mmssms.db
+#      - Redroid:  /data/user_de/0/com.android.providers.telephony/databases/mmssms.db
+#      原因：Android 10+ 的 TelephonyProvider 使用 device-protected storage，
+#      redroid 精简容器中 /data/data/ 路径不存在。
+#
+#   2. clear_sms_and_threads：redroid 下改用 ContentProvider delete 替代
+#      直接 SQL DELETE。
+#      原因：redroid 的 sqlite3 执行 DELETE ON sms 表时触发 FTS 虚拟表的
+#      sms_words_delete trigger，缺少 PRAGMA trusted_schema=ON 会静默失败。
+#      ContentProvider delete 走 TelephonyProvider 内部逻辑，可正确处理 FTS。
+#
+# 对评测语义/难度的影响：无。
+#   - 两种方式都是清除 SMS 数据，功能等价，仅实现路径不同。
+#   - is_successful 检查逻辑（check_sms_sent）未修改，仍读取 mmssms.db
+#     的 sms 表判断发送结果。
+#   - 修改仅影响 "数据清理" 环节，不改变任务目标、评估标准或 agent 交互流程。
+# =============================================================================
+
 import random
 import time
 
@@ -173,9 +197,46 @@ def sms_are_equal(message1: str, message2: str) -> bool:
   )
 
 
+# TelephonyProvider 的物理数据库路径。
+#
+# Android 10+ 起，`com.android.providers.telephony` 在 AndroidManifest 中声明
+# `android:defaultToDeviceProtectedStorage="true"`，provider 的数据目录从
+# credential-protected storage (`/data/data/...`) 迁到 device-protected
+# storage (`/data/user_de/0/...`)。Google emulator 绝大多数 system image 上
+# 两个路径通常通过 FBE 透明兼容；但在 redroid 等精简容器镜像里，
+# `/data/data/com.android.providers.telephony/databases/` 目录不存在，
+# 只有 `/data/user_de/0/com.android.providers.telephony/databases/mmssms.db`
+# 是实际物理文件。为此按 device_mode 分别走不同路径：
+_MMSSMS_DB_PATH_EMULATOR = (
+    "/data/data/com.android.providers.telephony/databases/mmssms.db"
+)
+_MMSSMS_DB_PATH_REDROID = (
+    "/data/user_de/0/com.android.providers.telephony/databases/mmssms.db"
+)
+
+
+def _get_mmssms_db_path(env: env_interface.AndroidEnvInterface) -> str:
+  """Returns the physical path of mmssms.db based on device mode."""
+  if getattr(env, "device_mode", "") == "redroid":
+    return _MMSSMS_DB_PATH_REDROID
+  return _MMSSMS_DB_PATH_EMULATOR
+
+
 def clear_sms_and_threads(env: env_interface.AndroidEnvInterface) -> None:
   """Removes all messages from UI by clearing the sms and threads tables."""
-  db_path = "/data/data/com.android.providers.telephony/databases/mmssms.db"
+  if getattr(env, 'device_mode', '') == 'redroid':
+    # On redroid, sqlite3 DELETE on the sms table fires the sms_words_delete
+    # trigger which touches the FTS "words" virtual table.  Without
+    # PRAGMA trusted_schema=ON this fails and the delete is silently skipped.
+    # Use ContentProvider delete instead — it goes through TelephonyProvider
+    # which handles the FTS table internally and also fires notifyChange().
+    # Requires WRITE_SMS AppOp for uid 0 (root); grant it first (idempotent).
+    adb_utils.issue_generic_request(
+        ['shell', 'appops set --uid 0 WRITE_SMS allow'], env)
+    adb_utils.issue_generic_request(
+        ['shell', 'content delete --uri content://sms'], env)
+    return
+  db_path = _get_mmssms_db_path(env)
   adb_utils.execute_sql_command(db_path, "DELETE FROM sms;", env)
   adb_utils.execute_sql_command(db_path, "DELETE FROM threads;", env)
 
@@ -183,8 +244,8 @@ def clear_sms_and_threads(env: env_interface.AndroidEnvInterface) -> None:
 class SimpleSMSSendSms(task_eval.TaskEval):
   """Task for checking that a single text message has been sent to a specific number with a specific message.
 
-  It checks the sms table in
-  /data/data/com.android.providers.telephony/databases/mmssms.db.
+  It checks the sms table in mmssms.db (path varies by device_mode; see
+  _get_mmssms_db_path).
 
   While this technique is app agnostic, the template task specifies Simple SMS
   Pro as the target messaging app instead the default Android messaging app.

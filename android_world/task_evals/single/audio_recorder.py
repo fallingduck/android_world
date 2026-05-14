@@ -12,18 +12,74 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# =============================================================================
+# 【修改说明】AudioRecorderRecordAudio.initialize_task 增加 pre-warm。
+# 修改日期：2026-05-14
+#
+# 修改内容：
+#   新增 _prewarm_audio_recorder()，在 initialize_task 中调用。
+#   检测 AudioRecorder 的录音目录是否存在，若不存在则用 monkey 启动
+#   AudioRecorder 一次（触发目录创建），再 force-stop。
+#
+# 修改原因：
+#   AudioRecorder 每次 setup 执行 pm clear，清空
+#   /storage/emulated/0/Android/data/com.dimowner.audiorecorder/files/Music/records
+#   目录。若该目录在 initialize_task 时不存在，get_file_list_with_metadata
+#   会抛 RuntimeError 导致 INIT_FAIL。此问题在 redroid 上必然发生（无快照
+#   恢复），在 Emulator 上也可能发生（如果快照中该目录不存在）。
+#
+# 对评测语义/难度的影响：无。
+#   - pre-warm 仅确保录音目录存在，不改变 app 的功能行为。
+#   - agent 的任务目标（"录一段音频"）和评估标准（检查录音文件是否生成）
+#     完全不变。
+#   - pre-warm 在 agent 开始操作之前完成，不影响 agent 的交互流程。
+# =============================================================================
+
 """Tasks for AudioRecorder app."""
 
 import random
+import time
 from typing import Any
 
 from absl import logging
+from android_world.env import adb_utils
 from android_world.env import device_constants
 from android_world.env import interface
 from android_world.task_evals import task_eval
 from android_world.task_evals.common_validators import file_validators
 from android_world.task_evals.utils import user_data_generation
 from android_world.utils import file_utils
+
+_AUDIO_RECORDER_PACKAGE = 'com.dimowner.audiorecorder'
+
+
+def _prewarm_audio_recorder(env: interface.AsyncEnv) -> None:
+  """Pre-warm AudioRecorder so that the recordings directory is created.
+
+  AudioRecorder creates /storage/emulated/0/Android/data/com.dimowner.
+  audiorecorder/files/Music/records only on first launch. If pm clear was
+  called (via AppSetup.setup) after the last real launch, the directory won't
+  exist and initialize_task will raise a RuntimeError.
+  """
+  if file_utils.check_file_or_folder_exists(
+      'records',
+      '/storage/emulated/0/Android/data/com.dimowner.audiorecorder/files/Music',
+      env.controller,
+  ):
+    return  # directory already exists
+
+  logging.info(
+      'AudioRecorder records dir missing, pre-warming AudioRecorder…'
+  )
+  adb_utils.issue_generic_request(
+      ['shell', 'monkey', '-p', _AUDIO_RECORDER_PACKAGE,
+       '-candroid.intent.category.LAUNCHER', '1'],
+      env.controller,
+  )
+  time.sleep(3.0)
+  adb_utils.close_app('audio recorder', env.controller)
+  time.sleep(1.0)
+  logging.info('AudioRecorder pre-warm complete.')
 
 
 class _AudioRecorder(task_eval.TaskEval):
@@ -45,6 +101,7 @@ class AudioRecorderRecordAudio(_AudioRecorder):
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
+    _prewarm_audio_recorder(env)  # ensure recordings dir exists before reading
     try:
       self.before_recording = file_utils.get_file_list_with_metadata(
           device_constants.AUDIORECORDER_DATA, env.controller

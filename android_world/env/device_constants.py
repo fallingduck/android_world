@@ -14,6 +14,25 @@
 
 """Constants for the Pixel 6, API 33, emulator."""
 
+# =============================================================================
+# 【修改说明】修正 Markor 数据目录大小写。
+# 修改日期：2026-05-14
+#
+# 修改内容：
+#   MARKOR_DATA 从 "/storage/emulated/0/Documents/Markor"（大写 M）改为
+#   "/storage/emulated/0/Documents/markor"（小写 m）。
+#
+# 修改原因：
+#   Markor v0.146 在 AOSP/redroid 上创建的数据目录为小写 markor，
+#   而上游 AndroidWorld 硬编码了大写 Markor（Google 签名版的行为）。
+#   redroid 上用大写路径会找不到目录，导致所有 Markor 任务误判为失败。
+#
+# 对评测语义/难度的影响：无。
+#   - 仅修正文件路径使其匹配实际文件系统状态，不改变任务目标、
+#     评估标准或 agent 交互流程。若路径错误则任务必然失败，
+#     修正后才能正确评估。
+# =============================================================================
+
 import datetime
 
 # Screen dimensions of Pixel 6.

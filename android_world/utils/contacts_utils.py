@@ -14,6 +14,24 @@
 
 """Utils for contacts operations using adb."""
 
+# =============================================================================
+# 【修改说明】适配 redroid 中文环境的联系人保存按钮。
+# 修改日期：2026-05-14
+#
+# 修改内容：
+#   add_contact 中 find_and_click_element("SAVE") 改为先尝试 "SAVE"
+#   （英文 locale），失败后尝试 "保存"（中文 locale），都失败则抛异常。
+#
+# 修改原因：
+#   AOSP Contacts 应用了系统 locale。Emulator 默认 locale=en，按钮文本
+#   为 "SAVE"；redroid 容器默认 locale=zh-CN，按钮文本为 "保存"。
+#   原始代码硬编码 "SAVE"，在中文 locale 下必然失败。
+#
+# 对评测语义/难度的影响：无。
+#   - 仅适配 UI 文本的 locale 差异，功能行为等价（都是点击保存按钮）。
+#   - 不改变任务目标、评估标准或 agent 交互流程。
+# =============================================================================
+
 import dataclasses
 import re
 import time
@@ -64,7 +82,19 @@ def add_contact(
   adb_command = ["shell", intent_command]
   adb_utils.issue_generic_request(adb_command, env)
   time.sleep(ui_delay_sec)
-  actuation.find_and_click_element("SAVE", env)
+  # AOSP Contacts localizes the action button. Try the English label first
+  # (Pixel/AVD with locale=en), then fall back to common locale variants.
+  # On redroid containers shipped with locale=zh-CN the button reads "保存".
+  for label in ("SAVE", "保存"):
+    try:
+      actuation.find_and_click_element(label, env)
+      break
+    except ValueError:
+      continue
+  else:
+    raise ValueError(
+        'Could not find Save / 保存 button in Contacts add-contact dialog.'
+    )
   time.sleep(ui_delay_sec)
   adb_utils.press_back_button(env)
   time.sleep(ui_delay_sec)

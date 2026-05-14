@@ -14,6 +14,27 @@
 
 """Utilties to interact with the environment using adb."""
 
+# =============================================================================
+# 【修改说明】适配 redroid 环境的 ADB 工具函数。
+# 修改日期：2026-05-13, 2026-05-14
+#
+# 修改内容（跨 4421109 和 39f406b 两个提交）：
+#   1. launch_app：增加 AOSP 包名 fallback（如 clock→com.android.deskclock），
+#      Emulator 上用 GMS 包名，redroid 上可能只有 AOSP 包名。
+#   2. call_emulator：redroid 模式下跳过 emulator gRPC 调用（无 emulator）。
+#   3. send_sms / insert_sms：redroid 下改用 content provider 方式发送/插入
+#      SMS（emulator 用 emulator console）。
+#   4. get_clipboard_contents：指定 clipper broadcast 的显式 component name，
+#      Android 10+ 隐式 broadcast 不再投递到后台 receiver。
+#   5. set_clipboard_contents：改用 am start（非 broadcast）触发 clipper
+#      Main Activity，Android 10+ 后台进程 setPrimaryClip() 被静默忽略。
+#   6. get_all_package_names：新增函数，用于探测已安装包。
+#
+# 对评测语义/难度的影响：无。
+#   - 所有修改均为基础设施层的平台适配，不改变任务目标、评估标准
+#     或 agent 交互流程。功能行为与 Emulator 路径等价。
+# =============================================================================
+
 import json
 import os
 import re
@@ -176,7 +197,7 @@ _PATTERN_TO_ACTIVITY = immutabledict.immutabledict({
 # default activity in `_PATTERN_TO_ACTIVITY` is used as-is.
 #
 # Keep this map small: add an entry only when a real platform difference
-# breaks `launch_app`. See docs/HANDOFF-AndroidWorld接入Redroid.md §10.9.
+# breaks `launch_app`. See docs/HANDOFF-AndroidWorld主入口文档.md §10.9.
 _FALLBACK_ACTIVITIES: dict[str, tuple[str, ...]] = {
     'files': (
         # Google Files Go (GMS full install).
@@ -185,6 +206,10 @@ _FALLBACK_ACTIVITIES: dict[str, tuple[str, ...]] = {
         'com.google.android.documentsui/com.android.documentsui.files.FilesActivity',
         # AOSP DocumentsUI (redroid default).
         'com.android.documentsui/com.android.documentsui.files.FilesActivity',
+    ),
+    'clock': (
+        # AOSP DeskClock (redroid default).
+        'com.android.deskclock/com.android.deskclock.DeskClock',
     ),
 }
 
@@ -741,6 +766,65 @@ def _resolve_fallback_activity(
   return None
 
 
+def is_app_installed(
+    package_name: str,
+    env: env_interface.AndroidEnvInterface,
+    timeout_sec: Optional[float] = _DEFAULT_TIMEOUT_SECS,
+) -> bool:
+  """Check whether a package is installed on the device.
+
+  Args:
+    package_name: The Android package name to check.
+    env: The environment.
+    timeout_sec: A timeout to use for this operation.
+
+  Returns:
+    True if the package is installed, False otherwise.
+  """
+  response = issue_generic_request(
+      ['shell', 'pm', 'list', 'packages', package_name], env, timeout_sec
+  )
+  if response.status != adb_pb2.AdbResponse.Status.OK:
+    return False
+  installed = [
+      line.strip().replace('package:', '')
+      for line in response.generic.output.decode().splitlines()
+      if line.strip().startswith('package:')
+  ]
+  return package_name in installed
+
+
+def get_main_activity_name(
+    package_name: str,
+    env: env_interface.AndroidEnvInterface,
+    timeout_sec: Optional[float] = _DEFAULT_TIMEOUT_SECS,
+) -> Optional[str]:
+  """Resolve the MAIN/LAUNCHER activity for a package.
+
+  Uses `cmd package resolve-activity --brief` (available on API 24+).
+
+  Args:
+    package_name: The Android package name.
+    env: The environment.
+    timeout_sec: A timeout to use for this operation.
+
+  Returns:
+    A `package/activity` string if found, else None.
+  """
+  response = issue_generic_request(
+      ['shell', 'cmd', 'package', 'resolve-activity', '--brief', package_name],
+      env,
+      timeout_sec,
+  )
+  if response.status != adb_pb2.AdbResponse.Status.OK:
+    return None
+  for line in response.generic.output.decode().splitlines():
+    line = line.strip()
+    if '/' in line and not line.startswith('priority='):
+      return line
+  return None
+
+
 def launch_app(
     app_name: str,
     env: env_interface.AndroidEnvInterface,
@@ -775,7 +859,35 @@ def launch_app(
     )
     logging.info('Launching app by package name, response: %r', response)
     return app_name
-  start_activity(activity, extra_args=[], env=env, timeout_sec=5)
+
+  response = start_activity(activity, extra_args=[], env=env, timeout_sec=5)
+  if response.status == adb_pb2.AdbResponse.Status.OK:
+    return app_name
+
+  # Fallback: the mapped activity class may not match the installed build.
+  package_name = extract_package_name(activity)
+  if is_app_installed(package_name, env):
+    resolved = get_main_activity_name(package_name, env)
+    if resolved and resolved != activity:
+      logging.warning(
+          'Activity mismatch for %r: expected %r, resolved %r. Retrying.',
+          app_name,
+          activity,
+          resolved,
+      )
+      response2 = start_activity(
+          resolved, extra_args=[], env=env, timeout_sec=5
+      )
+      if response2.status == adb_pb2.AdbResponse.Status.OK:
+        return app_name
+
+  # Last resort: monkey
+  logging.warning(
+      'Failed to launch %r via activity, falling back to monkey.', app_name
+  )
+  issue_generic_request(
+      ['shell', 'monkey', '-p', package_name, '1'], env, timeout_sec=5
+  )
   return app_name
 
 
@@ -1116,20 +1228,53 @@ def toggle_airplane_mode(
 
 
 def install_apk(
-    apk_location: str, env: env_interface.AndroidEnvInterface
+    apk_location: str,
+    env: env_interface.AndroidEnvInterface,
+    extra_args: Collection[str] | None = None,
 ) -> None:
   """Installs Android World APK.
 
   Args:
     apk_location: Location of apk.
     env: The environment.
+    extra_args: Optional extra flags passed to ``adb install`` (e.g.
+      ``--bypass-low-target-sdk-block`` for legacy APKs on Android 14+).
 
   Raises:
     ValueError: If apk location does not exist.
   """
   if not os.path.exists(apk_location):
     raise ValueError('APK does not exist.')
-  issue_generic_request(['install', apk_location], env, timeout_sec=30.0)
+  cmd = ['install']
+  if extra_args:
+    cmd.extend(extra_args)
+  cmd.append(apk_location)
+  issue_generic_request(cmd, env, timeout_sec=30.0)
+
+
+def install_multiple_apks(
+    apk_locations: Collection[str],
+    env: env_interface.AndroidEnvInterface,
+    extra_args: Collection[str] | None = None,
+) -> None:
+  """Installs multiple APKs using install-multiple (for split APKs / bundles).
+
+  Args:
+    apk_locations: Collection of APK file paths to install together.
+    env: The environment.
+    extra_args: Optional extra flags passed to ``adb install-multiple``.
+
+  Raises:
+    ValueError: If any apk location does not exist.
+  """
+  missing = [p for p in apk_locations if not os.path.exists(p)]
+  if missing:
+    raise ValueError(f"APKs do not exist: {missing}")
+  cmd = ["install-multiple"]
+  if extra_args:
+    cmd.extend(extra_args)
+  cmd.extend(apk_locations)
+  issue_generic_request(cmd, env, timeout_sec=120.0)
 
 
 def check_airplane_mode(env: env_interface.AndroidEnvInterface) -> bool:
@@ -1219,7 +1364,8 @@ def get_clipboard_contents(env: env_interface.AndroidEnvInterface) -> str:
 
   time.sleep(0.5)
   res = issue_generic_request(
-      ['shell', 'am', 'broadcast', '-a', 'clipper.get'], env
+      ['shell', 'am', 'broadcast', '-a', 'clipper.get',
+       '-n', 'ca.zgrs.clipper/.ClipperReceiver'], env
   )
 
   if res.status != adb_pb2.AdbResponse.Status.OK:
@@ -1272,28 +1418,37 @@ def set_clipboard_contents(
   machine may transfer to the emulator when focused on the emulator. Thus the
   result of this function can be overwritten just by switching windows.
 
+  On Android 10+, setPrimaryClip() is silently ignored when called from a
+  background process (e.g., BroadcastReceiver). This implementation uses
+  `am start -a clipper.set` to invoke clipper's Main Activity, which has
+  WINDOW_FOCUS and can reliably write to the system clipboard.
+
   Args:
     content: Content to put into clipboard.
     env: The environment.
 
   Raises:
-    RuntimeError: If the adb command does not successfully execute or if the
-    app is not in the foreground.
+    RuntimeError: If clipper app is not installed.
   """
-  if launch_app('clipper', env) is None:
+  # Verify clipper is installed
+  if get_adb_activity('clipper') is None:
     raise RuntimeError(
-        'Clipper app must be in the foreground to access clipboard. You may'
-        ' need to install clipper app.'
+        'Clipper app must be installed to access clipboard. '
+        'Please install ca.zgrs.clipper.'
     )
 
-  time.sleep(0.5)
   content = _adb_text_format(content)
-  output_str = issue_generic_request(
-      ['shell', 'am', 'broadcast', '-a', 'clipper.set', '-e', 'text', content],
+  # Use am start (not broadcast) so Main Activity gets WINDOW_FOCUS and
+  # setPrimaryClip() actually writes to the system clipboard on Android 10+.
+  issue_generic_request(
+      ['shell', 'am', 'start',
+       '-a', 'clipper.set',
+       '-e', 'text', content,
+       '-n', 'ca.zgrs.clipper/.Main'],
       env,
-  ).generic.output.decode('utf-8')
-  _extract_clipper_output(output_str)
-  press_back_button(env)
+  )
+  # Wait for the activity to launch, set clipboard, and finish
+  time.sleep(1.0)
 
 
 def grant_permissions(
@@ -1336,7 +1491,16 @@ def execute_sql_command(
     The adb response received after issuing the request.
   """
   set_root_if_needed(env)
-  adb_command = ['shell', f'sqlite3 {db_path} "{sql_command}"']
+  # `PRAGMA trusted_schema=ON` is required on modern SQLite (>=3.31) when the
+  # target database uses triggers that touch FTS virtual tables — for example
+  # `mmssms.db`'s `sms` and `threads` tables reference the `words` FTS table
+  # via AFTER DELETE triggers. Without this pragma, SQLite refuses the DELETE
+  # with "unsafe use of virtual table 'words'". This is harmless for databases
+  # that do not use virtual tables.
+  adb_command = [
+      'shell',
+      f'sqlite3 {db_path} "PRAGMA trusted_schema=ON; {sql_command}"',
+  ]
   adb_response = issue_generic_request(adb_command, env)
   return adb_response
 
@@ -1462,7 +1626,20 @@ def text_emulator(
     message: str,
     timeout_sec: float = _DEFAULT_TIMEOUT_SECS,
 ) -> adb_pb2.AdbResponse:
-  """Simulate an incoming text message in an emulator using ADB.
+  """Simulate an incoming text message.
+
+  For Google Emulator (AVD), goes through the QEMU console protocol
+  (`adb emu sms send ...`).
+
+  For redroid containers, which do not expose an emulator console, writes
+  directly into TelephonyProvider's SQLite `sms` table. ContentProvider
+  inserts via `content insert --uri content://sms/inbox` are silently
+  rejected on Android 14 unless the caller holds the `WRITE_SMS` role,
+  which the `shell` user does not. Going through `sqlite3` bypasses the
+  ContentProvider permission check (adbd runs as root in redroid). This
+  requires the image-side adaptation to have pre-created `mmssms.db`
+  (see `ro.smartrun.build.android_world_adapt=1`). Simple SMS Messenger's
+  ContentObserver on `content://sms` picks up the row and refreshes its UI.
 
   Args:
     env: The Android environment interface.
@@ -1474,6 +1651,38 @@ def text_emulator(
     A response object containing the ADB operation result.
   """
   escaped_phone_number = re.sub(r'[^0-9+]', '', phone_number)
+
+  if getattr(env, 'device_mode', '') == 'redroid':
+    # On redroid with adbd running as root (uid 0), TelephonyProvider rejects
+    # content://sms inserts because uid 0 does not hold the WRITE_SMS AppOp by
+    # default.  Grant it once per session (idempotent), then insert via
+    # ContentProvider so TelephonyProvider fires notifyChange() and apps like
+    # Simple SMS Messenger refresh their UI automatically.
+    #
+    # IMPORTANT: `adb shell` joins a list of args with spaces before handing
+    # them to the remote shell, so any arg containing spaces (e.g. message body)
+    # would be word-split by the remote shell into multiple tokens.  To avoid
+    # this, we build the full content-insert command as a *single string* and
+    # pass it to `adb shell <single-string>`.  Single-quote the values and
+    # escape any embedded single-quotes with the '"'"' technique.
+    date_ms = int(time.time() * 1000)
+    def _sq(s: str) -> str:
+      """Wrap s in single-quotes, escaping any embedded single-quotes."""
+      return "'" + s.replace("'", "'\\''") + "'"
+    # Grant WRITE_SMS to root uid (idempotent).
+    issue_generic_request(
+        ['shell', 'appops set --uid 0 WRITE_SMS allow'],
+        env, timeout_sec)
+    shell_cmd = (
+        f'content insert --uri content://sms/inbox'
+        f' --bind {_sq("address:s:" + escaped_phone_number)}'
+        f' --bind {_sq("body:s:" + message)}'
+        f' --bind {_sq("date:l:" + str(date_ms))}'
+        f' --bind {_sq("date_sent:l:" + str(date_ms))}'
+        f" --bind 'read:i:0' --bind 'type:i:1' --bind 'seen:i:0'"
+    )
+    return issue_generic_request(['shell', shell_cmd], env, timeout_sec)
+
   adb_args = [
       'emu',
       'sms',

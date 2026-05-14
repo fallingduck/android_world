@@ -14,6 +14,24 @@
 
 """Some LLM inference interface."""
 
+# =============================================================================
+# 【修改说明】适配 OpenAI 兼容端点和新模型 API 参数。
+# 修改日期：2026-05-14
+#
+# 修改内容（跨 8d13859 和 39f406b 两个提交）：
+#   1. Gpt4Wrapper：支持 OPENAI_BASE_URL 环境变量，允许连接 OpenAI 兼容端点
+#      （如 Tencent LKEAP、Azure OpenAI）。自动判断 URL 是否已包含
+#      /chat/completions 后缀，避免重复拼接。
+#   2. Gpt4Wrapper：启发式判断模型是否需要 max_completion_tokens 替代
+#      max_tokens（gpt-5/o1/o3/o4 系列），并自动移除不支持的 temperature 参数。
+#   3. Gpt4Wrapper：增加 API 错误自动恢复逻辑，当端点返回参数格式错误时
+#      自动重试（如 max_tokens→max_completion_tokens、移除 temperature）。
+#
+# 对评测语义/难度的影响：无。
+#   - 所有修改均为 LLM 调用层的模型/端点适配，不改变任务目标、评估标准
+#     或 agent 交互流程。使用相同模型时，agent 的推理能力不变。
+# =============================================================================
+
 import abc
 import base64
 import io
@@ -310,6 +328,26 @@ class Gpt4Wrapper(LlmWrapper, MultimodalLlmWrapper):
           },
       })
 
+    # Newer OpenAI models (gpt-5*, o1/o3/o4 reasoning, and many third-party
+    # OpenAI-compatible endpoints serving these) require `max_completion_tokens`
+    # instead of `max_tokens`. Heuristically switch by model name; on errors we
+    # also auto-recover at runtime (see retry loop below).
+    def _uses_max_completion_tokens(m: str) -> bool:
+      m = (m or '').lower()
+      return (
+          m.startswith('gpt-5')
+          or m.startswith('gpt-6')
+          or m.startswith('o1')
+          or m.startswith('o3')
+          or m.startswith('o4')
+      )
+
+    if _uses_max_completion_tokens(self.model):
+      payload['max_completion_tokens'] = payload.pop('max_tokens')
+      # gpt-5 / o-series do not support custom temperature; only the default
+      # value is accepted. Drop it to avoid 400 errors.
+      payload.pop('temperature', None)
+
     # Allow overriding the OpenAI-compatible endpoint (e.g. Tencent LKEAP,
     # Azure OpenAI, local gateway). Accept either a full URL ending in
     # `/chat/completions` or a base URL without the suffix.
@@ -333,9 +371,25 @@ class Gpt4Wrapper(LlmWrapper, MultimodalLlmWrapper):
               None,
               response,
           )
+        err_msg = response.json().get('error', {}).get('message', '')
+        # Auto-recover from the two most common API-shape mismatches when a
+        # local model name heuristic guessed wrong:
+        #   1) endpoint requires `max_completion_tokens` instead of `max_tokens`
+        #   2) endpoint rejects custom `temperature`
+        retried = False
+        if 'max_tokens' in err_msg and 'max_completion_tokens' in err_msg \
+            and 'max_tokens' in payload:
+          payload['max_completion_tokens'] = payload.pop('max_tokens')
+          retried = True
+        if "'temperature'" in err_msg and 'temperature' in payload:
+          payload.pop('temperature', None)
+          retried = True
+        if retried:
+          # Don't burn a retry slot or sleep — just resend with the fixed
+          # payload immediately.
+          continue
         print(
-            'Error calling OpenAI API with error message: '
-            + response.json()['error']['message']
+            'Error calling OpenAI API with error message: ' + err_msg
         )
         time.sleep(wait_seconds)
         wait_seconds *= 2

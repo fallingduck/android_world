@@ -14,9 +14,33 @@
 
 """Tasks for VLC player."""
 
+# =============================================================================
+# 【修改说明】_VLC.initialize_task 增加 pre-warm 逻辑。
+# 修改日期：2026-05-14
+#
+# 修改内容：
+#   新增 _prewarm_vlc()，在 _VLC.initialize_task 中调用。
+#   检测 VLC 的 vlc_media.db 是否存在，若不存在则用 monkey 启动 VLC 一次
+#   （触发 db 创建），再 force-stop。
+#
+# 修改原因：
+#   VLC 每次 setup 会执行 pm clear，清空 app_db 目录。
+#   若在全集跑时两个 VLC task 之间有其他 task 触发了 pm clear（或容器重启），
+#   /data/data/org.videolan.vlc/app_db/vlc_media.db 会消失，导致 INIT_FAIL。
+#   此问题在 redroid 上必然发生（无快照恢复），在 Emulator 上也可能发生。
+#
+# 对评测语义/难度的影响：无。
+#   - pre-warm 仅确保 VLC 数据库存在，不改变 app 的功能行为。
+#   - agent 的任务目标（播放/管理媒体）和评估标准完全不变。
+#   - pre-warm 在 agent 开始操作之前完成，不影响 agent 的交互流程。
+# =============================================================================
+
 import os
 import random
+import time
 from typing import Any
+from absl import logging
+from android_world.env import adb_utils
 from android_world.env import interface
 from android_world.env.setup_device import apps
 from android_world.task_evals import task_eval
@@ -28,6 +52,34 @@ from android_world.utils import file_utils
 
 _DB_PATH = '/data/data/org.videolan.vlc/app_db/vlc_media.db'
 _APP_NAME = 'vlc'
+_VLC_PACKAGE = 'org.videolan.vlc'
+
+
+def _prewarm_vlc(env: interface.AsyncEnv) -> None:
+  """Pre-warm VLC so that vlc_media.db is created if missing.
+
+  pm clear（executed during AppSetup.setup）wipes app_db. If VLC hasn't been
+  launched since the last clear, the db file won't exist and _clear_playlist_dbs
+  will raise an error. This function detects that state and launches VLC once
+  via monkey (same as VlcApp.setup) to trigger db creation, then force-stops.
+  """
+  if file_utils.check_file_or_folder_exists(
+      os.path.basename(_DB_PATH),
+      os.path.dirname(_DB_PATH),
+      env.controller,
+  ):
+    return  # db already exists, no need to pre-warm
+
+  logging.info('VLC db not found at %s, pre-warming VLC…', _DB_PATH)
+  adb_utils.issue_generic_request(
+      ['shell', 'monkey', '-p', _VLC_PACKAGE,
+       '-candroid.intent.category.LAUNCHER', '1'],
+      env.controller,
+  )
+  time.sleep(4.0)  # VLC first-launch db creation takes ~2-3 s
+  adb_utils.close_app(_APP_NAME, env.controller)
+  time.sleep(1.0)
+  logging.info('VLC pre-warm complete.')
 
 
 def _get_playlist_info_query() -> str:
@@ -77,6 +129,7 @@ class _VLC(task_eval.TaskEval):
     super().initialize_task(env)
     user_data_generation.clear_internal_storage(env)
     file_utils.clear_directory(apps.VlcApp.videos_path, env.controller)
+    _prewarm_vlc(env)  # ensure vlc_media.db exists before touching it
 
   def tear_down(self, env: interface.AsyncEnv):
     super().tear_down(env)

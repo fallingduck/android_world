@@ -1,8 +1,23 @@
 """AndroidEnv-compatible wrapper for a redroid device reachable over ADB."""
 
+# =============================================================================
+# 【修改说明】新增文件，实现 redroid 设备后端。
+# 修改日期：2026-05-14
+#
+# 功能说明：
+#   实现 AndroidEnvInterface 的 redroid 适配层，通过 adb 直连 redroid 容器。
+#   提供 reset()、step()、get_state() 等接口，使 AndroidWorld 的
+#   agent/task 框架能在 redroid 设备上运行。
+#
+# 对评测语义/难度的影响：无。
+#   - 纯基础设施层的新增代码，提供与 Emulator 后端等价的接口。
+#   - 不改变任务目标、评估标准或 agent 交互流程。
+# =============================================================================
+
 from __future__ import annotations
 
 import subprocess
+import time
 from typing import Any
 
 from absl import logging
@@ -115,6 +130,11 @@ class RedroidEnv(env_interface.AndroidEnvInterface):
     self._raw_action: dict[str, np.ndarray] | None = None
     # Ensure device is connected before first screenshot.
     self._ensure_connected()
+    # redroid containers boot into a "dream" keyguard
+    # (`mDreamingLockscreen=true`) which traps the agent into "tap to unlock"
+    # loops. Dismiss it once at startup; cheap and idempotent on subsequent
+    # `reset()` calls.
+    self._dismiss_keyguard()
     self._raw_observation: dict[str, np.ndarray] = {
         'pixels': self._capture_screenshot(),
     }
@@ -157,6 +177,37 @@ class RedroidEnv(env_interface.AndroidEnvInterface):
         logging.warning('adb %s failed: %s', ' '.join(args), e)
     self._ensure_connected()
 
+  def _dismiss_keyguard(self) -> None:
+    """Dismiss the redroid keyguard / dream lock screen and ensure the
+    launcher is actually on top.
+
+    redroid containers boot into a "dream" lock screen
+    (`mDreamingLockscreen=true`) — `screencap` captures the lock screen and
+    the agent gets stuck in an unreachable "tap to unlock" loop.
+
+    Sequence:
+      1) `input keyevent KEYCODE_WAKEUP` to make sure the device is awake.
+      2) `wm dismiss-keyguard` to remove the dream lock screen layer
+         (asynchronous, the keyguard layer fades out over ~500ms).
+      3) `input keyevent KEYCODE_HOME` to force the launcher to the front.
+      4) Short sleep so that the next `screencap` actually picks up the new
+         frame.
+    Idempotent — safe to call repeatedly (e.g. from `reset()`).
+    """
+    cmds = [
+        ['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'],
+        ['shell', 'wm', 'dismiss-keyguard'],
+        ['shell', 'input', 'keyevent', 'KEYCODE_HOME'],
+    ]
+    for cmd in cmds:
+      try:
+        self._adb_controller.execute_command(cmd, timeout=5)
+      except Exception as e:  # pylint: disable=broad-except
+        logging.warning('redroid dismiss step %s failed: %s', cmd, e)
+    # Give the lock screen layer animation time to finish so subsequent
+    # screencap calls pick up the post-dismiss frame.
+    time.sleep(1.0)
+
   def action_spec(self) -> dict[str, specs.Array]:
     return {
         'action_type': specs.Array(shape=(), dtype=np.int32),
@@ -172,6 +223,7 @@ class RedroidEnv(env_interface.AndroidEnvInterface):
   def reset(self) -> dm_env.TimeStep:
     self._raw_action = None
     self._ensure_connected()
+    self._dismiss_keyguard()
     self._raw_observation = {'pixels': self._capture_screenshot()}
     return dm_env.restart(self._raw_observation)
 

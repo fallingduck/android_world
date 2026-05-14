@@ -31,9 +31,11 @@ poetry.lock
 .venv/
 
 # Local operational scripts that should not be committed
-# (see docs/HANDOFF-AndroidWorld接入Redroid.md §13.5).
+# (see docs/HANDOFF-AndroidWorld主入口文档.md §13.5).
 /keep_tunnel.sh
 /run_full_suite.sh
 
 # Assistant-generated working notes.
 ./docs
+
+/android_world_apks

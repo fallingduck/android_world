@@ -14,6 +14,19 @@
 
 """Launches the environment used in the benchmark."""
 
+# =============================================================================
+# 【修改说明】增加 redroid 设备后端支持。
+# 修改日期：2026-05-14
+#
+# 修改内容：
+#   1. DeviceMode 枚举增加 REDROID 选项。
+#   2. load_and_setup_env 根据 device_mode 选择 Emulator 或 Redroid 后端。
+#   3. Redroid 模式下使用 adb 直连，无需 gRPC/emulator console。
+#
+# 对评测语义/难度的影响：无。
+#   - 纯基础设施层的设备后端选择，不改变任务目标、评估标准或 agent 交互流程。
+# =============================================================================
+
 import enum
 import platform
 
