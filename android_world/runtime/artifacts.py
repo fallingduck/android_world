@@ -96,12 +96,29 @@ class ArtifactWriter:
     if path is None:
       return
     try:
-      import cv2  # pylint: disable=g-import-not-at-top
-      bgr = cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR)
-      cv2.imwrite(path, bgr)
+      from PIL import Image  # pylint: disable=g-import-not-at-top
+      Image.fromarray(pixels).save(path)
     except Exception as exc:  # pylint: disable=broad-except
       logging.warning(
           'ArtifactWriter: screenshot write failed (sandbox=%s): %s',
+          self._sandbox_id,
+          exc,
+      )
+
+  def write_step_screenshot(
+      self, pixels: np.ndarray, step: int, label: str = 'raw'
+  ) -> None:
+    """Save a per-step screenshot as PNG (e.g. step_01_raw.png)."""
+    filename = f'step_{step:02d}_{label}.png'
+    path = self._task_path(filename)
+    if path is None:
+      return
+    try:
+      from PIL import Image  # pylint: disable=g-import-not-at-top
+      Image.fromarray(pixels).save(path)
+    except Exception as exc:  # pylint: disable=broad-except
+      logging.warning(
+          'ArtifactWriter: step screenshot write failed (sandbox=%s): %s',
           self._sandbox_id,
           exc,
       )

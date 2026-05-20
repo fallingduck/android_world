@@ -44,6 +44,11 @@ def _contact_info_is_entered(
   Specifically, it checks if current screen is the new contact screen and if the
   screen shows the function arguments filled out for the contacts.
 
+  Supports two modes:
+    - With hint_text (a11y forest mode): matches by hint_text + text value.
+    - Without hint_text (Appium/UiAutomator mode): matches EditText elements
+      by text value only, using class_name to filter.
+
   Args:
     first: First name.
     last: Last name.
@@ -63,29 +68,64 @@ def _contact_info_is_entered(
   # Do not use this input.
   assert phone_label != "Mobile"
 
+  # Detect whether hint_text is available (a11y forest mode) or not (Appium).
+  has_hints = any(e.hint_text for e in ui_elements)
+
   for element in ui_elements:
-    if (
-        element.text
-        and fuzzy_match_lib.fuzzy_match(element.text, first)
-        and element.hint_text == "First name"
-    ):
-      first_name_element = element
-    elif (
-        element.text
-        and fuzzy_match_lib.fuzzy_match(element.text, last)
-        and element.hint_text == "Last name"
-    ):
-      last_name_element = element
-    elif element.text and (
-        re.sub(r"\D", "", element.text) == re.sub(r"\D", "", phone)
-        and element.hint_text == "Phone"
-    ):
-      phone_element = element
-    elif (
-        element.text == phone_label
-        and element.content_description == phone_label + " Phone"
-    ):
-      phone_label_element = element
+    if has_hints:
+      # Original matching logic using hint_text.
+      if (
+          element.text
+          and fuzzy_match_lib.fuzzy_match(element.text, first)
+          and element.hint_text == "First name"
+      ):
+        first_name_element = element
+      elif (
+          element.text
+          and fuzzy_match_lib.fuzzy_match(element.text, last)
+          and element.hint_text == "Last name"
+      ):
+        last_name_element = element
+      elif element.text and (
+          re.sub(r"\D", "", element.text) == re.sub(r"\D", "", phone)
+          and element.hint_text == "Phone"
+      ):
+        phone_element = element
+      elif (
+          element.text == phone_label
+          and element.content_description == phone_label + " Phone"
+      ):
+        phone_label_element = element
+    else:
+      # Appium/UiAutomator mode: no hint_text available.
+      # EditText fields are identified by class_name + text content.
+      is_edit = (element.class_name == "android.widget.EditText")
+      if (
+          is_edit
+          and element.text
+          and fuzzy_match_lib.fuzzy_match(element.text, first)
+          and element.text != "First name"  # skip unfilled hint
+      ):
+        first_name_element = element
+      elif (
+          is_edit
+          and element.text
+          and fuzzy_match_lib.fuzzy_match(element.text, last)
+          and element.text != "Last name"  # skip unfilled hint
+      ):
+        last_name_element = element
+      elif (
+          is_edit
+          and element.text
+          and re.sub(r"\D", "", element.text) == re.sub(r"\D", "", phone)
+      ):
+        phone_element = element
+      elif (
+          element.text == phone_label
+          and element.class_name != "android.widget.EditText"
+      ):
+        # Phone label is a TextView (e.g. "Home", "Work") near the phone field.
+        phone_label_element = element
 
   # Content description may not be set properly, so we try to find the phone
   # label element by its text and its position if it is not found above
@@ -208,10 +248,15 @@ class ContactsNewContactDraft(task_eval.TaskEval):
       env: interface.AsyncEnv,
   ) -> float:
     super().is_successful(env)
-    ui_elements = representation_utils.forest_to_ui_elements(
-        env.get_state().forest,
-        exclude_invisible_elements=False,
-    )
+    state = env.get_state()
+    if state.forest is not None:
+      ui_elements = representation_utils.forest_to_ui_elements(
+          state.forest,
+          exclude_invisible_elements=False,
+      )
+    else:
+      # Appium mode: forest is None, use ui_elements from page source.
+      ui_elements = state.ui_elements
     return (
         1.0
         if _contact_info_is_entered(

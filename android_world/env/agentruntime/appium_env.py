@@ -80,19 +80,17 @@ class AppiumEnv:
     Returns:
       numpy array of shape (height, width, 3) in RGB order.
     """
-    try:
-      import cv2  # pylint: disable=g-import-not-at-top
-    except ImportError as exc:
-      raise ImportError(
-          'cv2 is required for screenshot decoding. pip install opencv-python'
-      ) from exc
+    import base64  # pylint: disable=g-import-not-at-top
+    import io  # pylint: disable=g-import-not-at-top
+    from PIL import Image  # pylint: disable=g-import-not-at-top
 
-    png_bytes = self._driver.get_screenshot_as_png()
-    arr = np.frombuffer(png_bytes, dtype=np.uint8)
-    img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img_bgr is None:
-      raise ValueError('Failed to decode Appium screenshot as an image.')
-    return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    # Use base64 screenshot to avoid cv2 decode issues with certain Appium
+    # backends (e.g. AGS sandbox) where get_screenshot_as_png() may return
+    # data that cv2.imdecode cannot handle.
+    b64 = self._driver.get_screenshot_as_base64()
+    png_bytes = base64.b64decode(b64)
+    img = Image.open(io.BytesIO(png_bytes)).convert('RGB')
+    return np.array(img)
 
   def page_source(self) -> str:
     """Return the current UI XML (uiautomator dump) as a string."""

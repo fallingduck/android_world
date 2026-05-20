@@ -217,6 +217,13 @@ class ParallelRunner:
         for step in range(max_steps):
           response = agent.step(inst.task.goal)
           episode_length = step + 1
+          # Save per-step screenshots if available (e.g. M3A agent).
+          if response.data:
+            for label in ('raw_screenshot', 'before_screenshot_with_som',
+                          'after_screenshot_with_som'):
+              pixels = response.data.get(label)
+              if pixels is not None:
+                writer.write_step_screenshot(pixels, step + 1, label)
           if response.done:
             is_done = True
             break

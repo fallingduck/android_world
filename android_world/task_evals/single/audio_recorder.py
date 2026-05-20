@@ -15,9 +15,11 @@
 """Tasks for AudioRecorder app."""
 
 import random
+import time
 from typing import Any
 
 from absl import logging
+from android_world.env import adb_utils
 from android_world.env import device_constants
 from android_world.env import interface
 from android_world.task_evals import task_eval
@@ -25,11 +27,39 @@ from android_world.task_evals.common_validators import file_validators
 from android_world.task_evals.utils import user_data_generation
 from android_world.utils import file_utils
 
+_PACKAGE = "com.dimowner.audiorecorder"
+
 
 class _AudioRecorder(task_eval.TaskEval):
   """Base class for AudioRecorder tasks."""
 
   app_names = ("audio recorder",)
+
+  def _ensure_audio_recorder_ready(self, env: interface.AsyncEnv) -> None:
+    """Ensure Audio Recorder data directory exists by launching the app once."""
+    if file_utils.check_directory_exists(
+        device_constants.AUDIORECORDER_DATA, env.controller
+    ):
+      return
+    logging.info(
+        "Audio Recorder data directory missing, launching app to create it."
+    )
+    # Grant permissions.
+    adb_utils.grant_permissions(
+        _PACKAGE, "android.permission.RECORD_AUDIO", env.controller
+    )
+    adb_utils.grant_permissions(
+        _PACKAGE, "android.permission.POST_NOTIFICATIONS", env.controller
+    )
+    # Launch the app to trigger directory creation.
+    adb_utils.issue_generic_request(
+        ["shell", "am", "start", "-n",
+         f"{_PACKAGE}/.app.main.MainActivity"],
+        env.controller,
+    )
+    time.sleep(3.0)
+    # Close the app after initialization.
+    adb_utils.close_app("audio recorder", env.controller)
 
 
 class AudioRecorderRecordAudio(_AudioRecorder):
@@ -45,16 +75,10 @@ class AudioRecorderRecordAudio(_AudioRecorder):
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
-    try:
-      self.before_recording = file_utils.get_file_list_with_metadata(
-          device_constants.AUDIORECORDER_DATA, env.controller
-      )
-    except RuntimeError as exc:
-      raise RuntimeError(
-          "Failed to inspect recordings directory,"
-          " {device_constants.AUDIORECORDER_DATA}, for Audio Recorder task."
-          " Check to make sure Audio Recorder app is correctly installed."
-      ) from exc
+    self._ensure_audio_recorder_ready(env)
+    self.before_recording = file_utils.get_file_list_with_metadata(
+        device_constants.AUDIORECORDER_DATA, env.controller
+    )
 
   def is_successful(self, env: interface.AsyncEnv) -> float:
     super().is_successful(env)
@@ -108,6 +132,7 @@ class AudioRecorderRecordAudioWithFileName(_AudioRecorder):
 
   def initialize_task(self, env: interface.AsyncEnv) -> None:
     super().initialize_task(env)
+    self._ensure_audio_recorder_ready(env)
     self.create_file_task.initialize_task(env)
     self._clear_audio_recorder_data(env)
 

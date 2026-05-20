@@ -126,7 +126,9 @@ def table_exists(
         env,
     )
     return True
-  except (FileNotFoundError, ValueError):
+  except (FileNotFoundError, ValueError, RuntimeError):
+    # RuntimeError is raised by the Appium bridge when the remote directory
+    # does not exist yet (e.g. VLC's app_db before first launch).
     return False
 
 
@@ -150,6 +152,9 @@ def delete_all_rows_from_table(
     # If the database was never created, opening the app may create it.
     adb_utils.launch_app(app_name, env.controller)
     time.sleep(7.0)
+    if not table_exists(table_name, remote_db_file_path, env):
+      # DB still doesn't exist after launching the app; nothing to delete.
+      return
 
   with env.controller.pull_file(
       remote_db_file_path, timeout_sec

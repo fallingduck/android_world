@@ -23,6 +23,16 @@ command-line flags.
 from collections.abc import Sequence
 import os
 
+# Auto-load environment variables from .env if available, so we don't have to
+# `source .env` every time before running.
+try:
+  from dotenv import load_dotenv  # type: ignore[import-not-found]
+  _ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+  if os.path.exists(_ENV_FILE):
+    load_dotenv(_ENV_FILE, override=True)
+except ImportError:
+  pass
+
 from absl import app
 from absl import flags
 from absl import logging

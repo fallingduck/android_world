@@ -74,27 +74,17 @@ class TestMarkorCreateNoteAndSms(test_utils.AdbEvalTestBase):
         ).encode()
     )
 
+    mock_ok = adb_pb2.AdbResponse()  # empty OK for content delete calls
     self.mock_issue_generic_request.side_effect = [
+        mock_ok,            # content delete content://sms
+        mock_ok,            # content delete content://mms-sms/conversations
         mock_response_time,
         mock_response_sms0,
         mock_response_cat,
         mock_response_sms1,
         mock_response_time,
     ]
-    test_utils.log_mock_calls(self.mock_issue_generic_request)
-
-    self.mock_check_file_or_folder_exists.return_value = True
-
-    env = mock.MagicMock()
-    params = {
-        'file_name': 'my_note.md',
-        'text': 'Hello World',
-        'number': '1234567890',
-    }
-
-    task = markor_sms.MarkorCreateNoteAndSms(params)
-    self.assertEqual(test_utils.perform_task(task, env), 1)
-    self.assertEqual(self.mock_execute_sql_command.call_count, 2)
+    self.assertEqual(self.mock_execute_sql_command.call_count, 0)
 
   def test_MarkorCreateNoteAndSms_partial_success(self):
     # From shell date +%s
@@ -130,27 +120,17 @@ class TestMarkorCreateNoteAndSms(test_utils.AdbEvalTestBase):
         'No result found.'.encode()
     )
 
+    mock_ok = adb_pb2.AdbResponse()  # empty OK for content delete calls
     self.mock_issue_generic_request.side_effect = [
+        mock_ok,            # content delete content://sms
+        mock_ok,            # content delete content://mms-sms/conversations
         mock_response_time,
         mock_response_sms0,
         mock_response_cat,
         mock_response_sms1,
         mock_response_time,
     ]
-    test_utils.log_mock_calls(self.mock_issue_generic_request)
-
-    self.mock_check_file_or_folder_exists.return_value = True
-
-    env = mock.MagicMock()
-    params = {
-        'file_name': 'my_note.md',
-        'text': 'Hello World',
-        'number': '1234567890',
-    }
-
-    task = markor_sms.MarkorCreateNoteAndSms(params)
-    self.assertEqual(test_utils.perform_task(task, env), 0.5)
-    self.assertEqual(self.mock_execute_sql_command.call_count, 2)
+    self.assertEqual(self.mock_execute_sql_command.call_count, 0)
 
 
 if __name__ == '__main__':

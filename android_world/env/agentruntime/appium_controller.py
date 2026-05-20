@@ -238,32 +238,58 @@ class AppiumController(
       remote_db_file_path: str,
       timeout_sec: Optional[float] = None,
   ) -> contextlib._GeneratorContextManager:
-    """Pull the directory containing ``remote_db_file_path`` to a temp dir.
+    """Pull the file at ``remote_db_file_path`` (and its siblings) to a temp dir.
 
     Mirrors the ``AndroidWorldController.pull_file`` contract: returns a
-    context manager that yields the path to a local temp directory.  The
-    directory is cleaned up on exit.
+    context manager that yields the path to a local temp directory containing
+    the pulled file.  The directory is cleaned up on exit.
+
+    Uses Appium's native ``pull_file`` API (via UiAutomator2) to directly
+    retrieve the file, bypassing the ``mobile: shell ls`` enumeration that
+    fails on SELinux-protected directories (e.g. VLC's ``app_db``).
 
     Args:
-      remote_db_file_path: Path to a file on the device.  Its *parent
-        directory* will be pulled.
+      remote_db_file_path: Path to a file on the device.
       timeout_sec: Unused (kept for API compatibility).
 
     Returns:
       A context manager yielding the local temp directory path.
     """
-    remote_dir = os.path.dirname(remote_db_file_path)
-    return self._pull_directory_ctx(remote_dir)
+    return self._pull_file_ctx(remote_db_file_path)
+
+  @contextlib.contextmanager
+  def _pull_file_ctx(self, remote_file_path: str):
+    """Context manager: pull a single file to a temp dir, yield it, clean up."""
+    import shutil  # pylint: disable=g-import-not-at-top
+    tmp_dir = tempfile.mkdtemp(prefix='aw_pull_')
+    try:
+      filename = os.path.basename(remote_file_path)
+      local_path = os.path.join(tmp_dir, filename)
+      try:
+        data = self._appium_env.pull_file(remote_file_path)
+      except Exception as exc:  # pylint: disable=broad-except
+        # Appium raises UnknownException (or similar) when the remote file does
+        # not exist (e.g. VLC's vlc_media.db before first launch).  Convert to
+        # FileNotFoundError so callers like sqlite_utils.table_exists() can
+        # treat a missing file uniformly without depending on Appium internals.
+        raise FileNotFoundError(
+            f'Remote file not found: {remote_file_path}'
+        ) from exc
+      with open(local_path, 'wb') as fh:
+        fh.write(data)
+      yield tmp_dir
+    finally:
+      shutil.rmtree(tmp_dir, ignore_errors=True)
 
   @contextlib.contextmanager
   def _pull_directory_ctx(self, remote_dir: str):
     """Context manager: pull remote_dir to a temp dir, yield it, then clean up."""
+    import shutil  # pylint: disable=g-import-not-at-top
     tmp_dir = tempfile.mkdtemp(prefix='aw_pull_')
     try:
       self._appium_env.pull_directory(remote_dir, tmp_dir)
       yield tmp_dir
     finally:
-      import shutil  # pylint: disable=g-import-not-at-top
       shutil.rmtree(tmp_dir, ignore_errors=True)
 
   def push_file(

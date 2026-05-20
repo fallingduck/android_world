@@ -175,9 +175,12 @@ def sms_are_equal(message1: str, message2: str) -> bool:
 
 def clear_sms_and_threads(env: env_interface.AndroidEnvInterface) -> None:
   """Removes all messages from UI by clearing the sms and threads tables."""
-  db_path = "/data/data/com.android.providers.telephony/databases/mmssms.db"
-  adb_utils.execute_sql_command(db_path, "DELETE FROM sms;", env)
-  adb_utils.execute_sql_command(db_path, "DELETE FROM threads;", env)
+  # Use content provider URI instead of direct SQLite access, which requires
+  # root and is unavailable when routing through the Appium bridge.
+  for uri in ('content://sms', 'content://mms-sms/conversations'):
+    adb_utils.issue_generic_request(
+        ['shell', 'content', 'delete', '--uri', uri], env
+    )
 
 
 class SimpleSMSSendSms(task_eval.TaskEval):

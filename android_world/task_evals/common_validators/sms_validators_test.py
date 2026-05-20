@@ -143,7 +143,10 @@ class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
         ).encode()
     )
 
+    mock_ok = adb_pb2.AdbResponse()  # empty OK for content delete calls
     self.mock_issue_generic_request.side_effect = [
+        mock_ok,            # content delete content://sms
+        mock_ok,            # content delete content://mms-sms/conversations
         mock_response_time,
         mock_response_sms0,
         mock_response_sms1,
@@ -157,8 +160,8 @@ class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
     task = sms_validators.SimpleSMSSendSms(params)
     self.assertEqual(test_utils.perform_task(task, env), 1)
 
-    # Clear sms and threads tables.
-    self.assertEqual(self.mock_execute_sql_command.call_count, 2)
+    # clear_sms_and_threads now uses issue_generic_request with content URIs.
+    self.assertEqual(self.mock_execute_sql_command.call_count, 0)
 
   def test_initialize_task_message_already_sent(self):
     # From shell date +%s
@@ -188,7 +191,10 @@ class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
         ).encode()
     )
 
+    mock_ok = adb_pb2.AdbResponse()  # empty OK for content delete calls
     self.mock_issue_generic_request.side_effect = [
+        mock_ok,            # content delete content://sms
+        mock_ok,            # content delete content://mms-sms/conversations
         mock_response_time,
         mock_response_sms0,
         mock_response_sms1,
@@ -201,8 +207,8 @@ class TestMessagesSendTextMessage(test_utils.AdbEvalTestBase):
     task = sms_validators.SimpleSMSSendSms(params)
     with self.assertRaises(ValueError):
       task.initialize_task(env)
-    # Clear sms and threads tables.
-    self.assertEqual(self.mock_execute_sql_command.call_count, 2)
+    # clear_sms_and_threads now uses issue_generic_request with content URIs.
+    self.assertEqual(self.mock_execute_sql_command.call_count, 0)
 
 
 if __name__ == '__main__':
