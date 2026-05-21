@@ -23,17 +23,19 @@ It does the following:
 
 # =============================================================================
 # 【修改说明】适配 redroid 环境的设备初始化流程。
-# 修改日期：2026-05-14
+# 修改日期：2026-05-14, 2026-05-21
 #
 # 修改内容：
 #   1. 增加 local_apk_dir 支持，redroid 下优先从本地 APK 目录安装。
 #   2. 增加 APK 安装状态检测（pm list packages），避免重复安装。
 #   3. redroid 模式下跳过 emulator-specific 的 setup 步骤（如 gRPC 调用）。
 #   4. 支持 AOSP 和 GMS 两种包名体系。
+#   5. local_apk_dir 从硬编码 /root/android_world_apks 改为读取环境变量
+#      ANDROID_WORLD_LOCAL_APK_DIR（默认值不变），方便不同部署环境自定义路径。
 #
 # 对评测语义/难度的影响：无。
 #   - 所有修改均为设备初始化流程的平台适配，不改变任务目标、评估标准
-#     或 agent 交互流程。
+#     或 agent 交互流程。环境变量化仅影响 APK 查找路径，不影响评测逻辑。
 # =============================================================================
 
 import glob
@@ -239,7 +241,10 @@ def maybe_install_app(
     return
   logging.info("Installing app: %s.", app.app_name)
 
-  local_apk_dir = "/root/android_world_apks" if _is_redroid(env) else None
+  _default_redroid_apk_dir = os.environ.get(
+      "ANDROID_WORLD_LOCAL_APK_DIR", "/root/android_world_apks"
+  )
+  local_apk_dir = _default_redroid_apk_dir if _is_redroid(env) else None
 
   # Clipper targets a very old SDK (targetSdk=10). Android 14+ rejects it
   # unless --bypass-low-target-sdk-block is passed.

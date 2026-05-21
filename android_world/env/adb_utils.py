@@ -16,23 +16,32 @@
 
 # =============================================================================
 # 【修改说明】适配 redroid 环境的 ADB 工具函数。
-# 修改日期：2026-05-13, 2026-05-14
+# 修改日期：2026-05-13, 2026-05-14, 2026-05-21
 #
-# 修改内容（跨 4421109 和 39f406b 两个提交）：
+# 修改内容（跨 4421109、39f406b 两个提交及后续未提交变更）：
 #   1. launch_app：增加 AOSP 包名 fallback（如 clock→com.android.deskclock），
 #      Emulator 上用 GMS 包名，redroid 上可能只有 AOSP 包名。
 #   2. call_emulator：redroid 模式下跳过 emulator gRPC 调用（无 emulator）。
 #   3. send_sms / insert_sms：redroid 下改用 content provider 方式发送/插入
 #      SMS（emulator 用 emulator console）。
-#   4. get_clipboard_contents：指定 clipper broadcast 的显式 component name，
-#      Android 10+ 隐式 broadcast 不再投递到后台 receiver。
-#   5. set_clipboard_contents：改用 am start（非 broadcast）触发 clipper
-#      Main Activity，Android 10+ 后台进程 setPrimaryClip() 被静默忽略。
+#   4. get_clipboard_contents：
+#      - 指定 clipper broadcast 的显式 component name（-n ca.zgrs.clipper/.ClipperReceiver），
+#        Android 10+ 隐式 broadcast 不再投递到后台 receiver。
+#      - 不再预先 launch_app + press_back，改为仅检查安装状态。ClipperReceiver
+#        的 handleGet() 会从 SharedPreferences cache 读取（由 set 写入），
+#        无需前台焦点即可返回内容，减少不必要的 UI 切换。
+#   5. set_clipboard_contents：
+#      - 从 am start 触发 Main Activity 改为 IME 特权路径：
+#        保存当前输入法 → 激活 clipper ClipboardIME → 通过 broadcast 写入
+#        → 恢复原输入法。原因：Android 14+ 普通进程 setPrimaryClip() 会被
+#        ClipboardService 因 "Could not grant permission to primary clip" 立即清空，
+#        但 IME 进程不受此限制。
 #   6. get_all_package_names：新增函数，用于探测已安装包。
 #
 # 对评测语义/难度的影响：无。
 #   - 所有修改均为基础设施层的平台适配，不改变任务目标、评估标准
-#     或 agent 交互流程。功能行为与 Emulator 路径等价。
+#     或 agent 交互流程。get/set clipboard 的功能行为与原路径等价，
+#     仅实现机制不同以适配 Android 14+ 权限策略。
 # =============================================================================
 
 import json
@@ -1346,6 +1355,9 @@ def _extract_clipper_output(raw_output: str) -> str:
 def get_clipboard_contents(env: env_interface.AndroidEnvInterface) -> str:
   """Gets the clipboard content from the Android device.
 
+  ClipperReceiver.handleGet() reads from SharedPreferences cache (written by
+  set_clipboard_contents) as fallback, so this works without foreground focus.
+
   Args:
     env: The environment.
 
@@ -1353,16 +1365,14 @@ def get_clipboard_contents(env: env_interface.AndroidEnvInterface) -> str:
     The clipboard content as a string.
 
   Raises:
-    RuntimeError: If the adb command does not successfully execute or if the
-      app is not in the foreground.
+    RuntimeError: If the adb command does not successfully execute.
   """
-  if launch_app('clipper', env) is None:
+  if get_adb_activity('clipper') is None:
     raise RuntimeError(
-        'Clipper app must be in the foreground to access clipboard. You may'
-        ' need to install clipper app.'
+        'Clipper app must be installed to access clipboard. '
+        'Please install ca.zgrs.clipper.'
     )
 
-  time.sleep(0.5)
   res = issue_generic_request(
       ['shell', 'am', 'broadcast', '-a', 'clipper.get',
        '-n', 'ca.zgrs.clipper/.ClipperReceiver'], env
@@ -1372,10 +1382,7 @@ def get_clipboard_contents(env: env_interface.AndroidEnvInterface) -> str:
     raise RuntimeError('Failed to get clipboard content.')
 
   output_str = res.generic.output.decode('utf-8')
-  result = _extract_clipper_output(output_str)
-
-  press_back_button(env)
-  return result
+  return _extract_clipper_output(output_str)
 
 
 def change_orientation(
@@ -1414,14 +1421,11 @@ def set_clipboard_contents(
 ) -> None:
   """Sets the clipboard content on the Android device.
 
-  NOTE: If using an Emulator, the contents of your clipboard on your local
-  machine may transfer to the emulator when focused on the emulator. Thus the
-  result of this function can be overwritten just by switching windows.
-
-  On Android 10+, setPrimaryClip() is silently ignored when called from a
-  background process (e.g., BroadcastReceiver). This implementation uses
-  `am start -a clipper.set` to invoke clipper's Main Activity, which has
-  WINDOW_FOCUS and can reliably write to the system clipboard.
+  Android 14 剪贴板写入策略（IME 特权路径）：
+    普通 app 调用 setPrimaryClip() 会被 ClipboardService 因无法向其他进程授权而
+    立即清空（"Could not grant permission to primary clip"）。
+    IME 进程不受此限制。本函数先将 ca.zgrs.clipper 临时激活为输入法，
+    在 IME 身份下通过广播写入剪贴板，写完后立即恢复原输入法。
 
   Args:
     content: Content to put into clipboard.
@@ -1430,7 +1434,6 @@ def set_clipboard_contents(
   Raises:
     RuntimeError: If clipper app is not installed.
   """
-  # Verify clipper is installed
   if get_adb_activity('clipper') is None:
     raise RuntimeError(
         'Clipper app must be installed to access clipboard. '
@@ -1438,17 +1441,37 @@ def set_clipboard_contents(
     )
 
   content = _adb_text_format(content)
-  # Use am start (not broadcast) so Main Activity gets WINDOW_FOCUS and
-  # setPrimaryClip() actually writes to the system clipboard on Android 10+.
+
+  # 1. 保存当前输入法（用于写入后恢复）
+  res_orig = issue_generic_request(
+      ['shell', 'settings', 'get', 'secure', 'default_input_method'], env
+  )
+  original_ime = (
+      res_orig.generic.output.decode('utf-8').strip()
+      if res_orig.status == adb_pb2.AdbResponse.Status.OK
+      else 'com.android.inputmethod.latin/.LatinIME'
+  )
+
+  # 2. 激活 clipper 作为输入法（获得 IME 剪贴板特权）
   issue_generic_request(
-      ['shell', 'am', 'start',
+      ['shell', 'ime', 'set', 'ca.zgrs.clipper/.ClipboardIME'], env
+  )
+  time.sleep(0.1)
+
+  # 3. 通过广播写入剪贴板（ClipperReceiver 运行在 IME 进程，写入成功）
+  issue_generic_request(
+      ['shell', 'am', 'broadcast',
        '-a', 'clipper.set',
        '-e', 'text', content,
-       '-n', 'ca.zgrs.clipper/.Main'],
+       '-n', 'ca.zgrs.clipper/.ClipperReceiver'],
       env,
   )
-  # Wait for the activity to launch, set clipboard, and finish
-  time.sleep(1.0)
+
+  # 4. 恢复原输入法
+  issue_generic_request(
+      ['shell', 'ime', 'set', original_ime], env
+  )
+  time.sleep(0.1)
 
 
 def grant_permissions(
