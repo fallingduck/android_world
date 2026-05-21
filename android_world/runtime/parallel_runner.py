@@ -73,6 +73,7 @@ class TaskInstance:
   task_name: str
   task: task_eval.TaskEval
   seed: int
+  sandbox_idx: int = 0  # Which sandbox this instance is assigned to.
 
 
 @dataclasses.dataclass
@@ -125,55 +126,65 @@ class ParallelRunner:
   def run(self, instances: list[TaskInstance]) -> list[EpisodeResult]:
     """Run all task instances and return aggregated results.
 
+    Instances are grouped by ``sandbox_idx``.  Each group is executed
+    sequentially on a dedicated sandbox, while different sandboxes run in
+    parallel.
+
     Args:
-      instances: Flat list of ``TaskInstance`` objects to evaluate.
+      instances: Flat list of ``TaskInstance`` objects to evaluate.  Each
+        instance must have a ``sandbox_idx`` indicating which sandbox it
+        belongs to.
 
     Returns:
       List of ``EpisodeResult``, one per instance, in completion order.
     """
-    max_workers = min(
-        self._cfg.thread_pool_size,
-        self._cfg.max_concurrency or len(self._pool),
-        len(instances),
-    )
-    max_workers = max(max_workers, 1)
+    from collections import defaultdict  # pylint: disable=g-import-not-at-top
 
-    results: list[EpisodeResult] = []
-    futures: dict[Future, TaskInstance] = {}
+    # Group instances by their assigned sandbox.
+    per_sandbox: dict[int, list[TaskInstance]] = defaultdict(list)
+    for inst in instances:
+      per_sandbox[inst.sandbox_idx].append(inst)
+
+    n_sandboxes = len(per_sandbox)
 
     logging.info(
-        'ParallelRunner: running %d task instance(s) with %d worker thread(s).',
+        'ParallelRunner: running %d task instance(s) across %d sandbox(es) '
+        '(%d per sandbox).',
         len(instances),
-        max_workers,
+        n_sandboxes,
+        len(instances) // max(n_sandboxes, 1),
     )
 
+    results: list[EpisodeResult] = []
+    futures: dict[Future, int] = {}
+
     with ThreadPoolExecutor(
-        max_workers=max_workers, thread_name_prefix='par-runner'
+        max_workers=n_sandboxes, thread_name_prefix='par-runner'
     ) as ex:
-      for inst in instances:
-        fut = ex.submit(self._run_one, inst)
-        futures[fut] = inst
+      for sandbox_idx, sandbox_instances in per_sandbox.items():
+        fut = ex.submit(self._run_sandbox, sandbox_idx, sandbox_instances)
+        futures[fut] = sandbox_idx
 
       for fut in as_completed(futures):
-        inst = futures[fut]
+        sandbox_idx = futures[fut]
         exc = fut.exception()
         if exc:
           logging.error(
-              'ParallelRunner: unhandled exception for task %s seed %d: %s',
-              inst.task_name,
-              inst.seed,
+              'ParallelRunner: sandbox %d encountered unhandled exception: %s',
+              sandbox_idx,
               exc,
           )
-          result = EpisodeResult(
-              task_name=inst.task_name,
-              seed=inst.seed,
-              is_successful=0.0,
-              episode_length=0,
-              error=str(exc),
-          )
+          # Mark all instances for this sandbox as failed.
+          for inst in per_sandbox[sandbox_idx]:
+            results.append(EpisodeResult(
+                task_name=inst.task_name,
+                seed=inst.seed,
+                is_successful=0.0,
+                episode_length=0,
+                error=str(exc),
+            ))
         else:
-          result = fut.result()
-        results.append(result)
+          results.extend(fut.result())
 
     logging.info(
         'ParallelRunner: finished.  %d/%d successful.',
@@ -186,105 +197,135 @@ class ParallelRunner:
   # Worker
   # -------------------------------------------------------------------------
 
-  def _run_one(self, inst: TaskInstance) -> EpisodeResult:
-    """Run a single task instance inside a worker thread."""
+  def _run_sandbox(
+      self, sandbox_idx: int, instances: list[TaskInstance]
+  ) -> list[EpisodeResult]:
+    """Run all tasks assigned to one sandbox sequentially.
+
+    Acquires the sandbox once and holds it for the entire task list, avoiding
+    repeated acquire/release overhead and ensuring each sandbox runs its full
+    suite independently.
+    """
+    results: list[EpisodeResult] = []
+    with self._pool.acquire() as handle:
+      logging.info(
+          'Sandbox %d (%s): starting %d task(s).',
+          sandbox_idx,
+          handle.sandbox_id,
+          len(instances),
+      )
+      for inst in instances:
+        result = self._run_one_with_handle(inst, handle)
+        results.append(result)
+      logging.info(
+          'Sandbox %d (%s): finished %d task(s), %d successful.',
+          sandbox_idx,
+          handle.sandbox_id,
+          len(results),
+          sum(1 for r in results if r.is_successful == 1.0),
+      )
+    return results
+
+  def _run_one_with_handle(
+      self, inst: TaskInstance, handle
+  ) -> EpisodeResult:
+    """Run a single task instance on a pre-acquired sandbox handle."""
     t_start = time.monotonic()
 
-    with self._pool.acquire() as handle:
-      sandbox_id = handle.sandbox_id
-      env = handle.env
-      writer = handle.artifact_writer
+    sandbox_id = handle.sandbox_id
+    env = handle.env
+    writer = handle.artifact_writer
 
-      writer.begin_task(inst.task_name, inst.seed)
-      agent = self._agent_factory(env)
-      episode_length = 0
-      error_msg = None
-      is_successful = 0.0
+    writer.begin_task(inst.task_name, inst.seed)
+    agent = self._agent_factory(env)
+    episode_length = 0
+    error_msg = None
+    is_successful = 0.0
 
-      try:
-        # Reset env to home screen.
-        env.reset(go_home=True)
+    try:
+      # Reset env to home screen.
+      env.reset(go_home=True)
 
-        # Initialize the task.
-        inst.task.initialize_task(env)
+      # Initialize the task.
+      inst.task.initialize_task(env)
 
-        writer.write_console(f'[START] {inst.task_name} seed={inst.seed}\n')
-        writer.write_console(f'Goal: {inst.task.goal}\n')
+      writer.write_console(f'[START] {inst.task_name} seed={inst.seed}\n')
+      writer.write_console(f'Goal: {inst.task.goal}\n')
 
-        # Run the agent loop.
-        max_steps = int(inst.task.complexity * 10)
-        is_done = False
-        for step in range(max_steps):
-          response = agent.step(inst.task.goal)
-          episode_length = step + 1
-          # Save per-step screenshots if available (e.g. M3A agent).
-          if response.data:
-            for label in ('raw_screenshot', 'before_screenshot_with_som',
-                          'after_screenshot_with_som'):
-              pixels = response.data.get(label)
-              if pixels is not None:
-                writer.write_step_screenshot(pixels, step + 1, label)
-          if response.done:
-            is_done = True
-            break
+      # Run the agent loop.
+      max_steps = int(inst.task.complexity * 10)
+      is_done = False
+      for step in range(max_steps):
+        response = agent.step(inst.task.goal)
+        episode_length = step + 1
+        # Save per-step screenshots if available (e.g. M3A agent).
+        if response.data:
+          for label in ('raw_screenshot', 'before_screenshot_with_som',
+                        'after_screenshot_with_som'):
+            pixels = response.data.get(label)
+            if pixels is not None:
+              writer.write_step_screenshot(pixels, step + 1, label)
+        if response.done:
+          is_done = True
+          break
 
-        # Evaluate success.
-        is_successful = inst.task.is_successful(env)
-        writer.write_console(
-            f'[END] success={is_successful}, steps={episode_length}\n'
-        )
+      # Evaluate success.
+      is_successful = inst.task.is_successful(env)
+      writer.write_console(
+          f'[END] success={is_successful}, steps={episode_length}\n'
+      )
 
-      except Exception as exc:  # pylint: disable=broad-except
-        error_msg = traceback.format_exc()
-        logging.error(
-            'ParallelRunner: task %s seed %d failed (sandbox=%s): %s',
-            inst.task_name,
-            inst.seed,
-            sandbox_id,
-            exc,
-        )
-        writer.write_console(f'[ERROR] {exc}\n')
+    except Exception as exc:  # pylint: disable=broad-except
+      error_msg = traceback.format_exc()
+      logging.error(
+          'ParallelRunner: task %s seed %d failed (sandbox=%s): %s',
+          inst.task_name,
+          inst.seed,
+          sandbox_id,
+          exc,
+      )
+      writer.write_console(f'[ERROR] {exc}\n')
 
-        # Collect failure artefacts.
-        if self._cfg.dump_logcat_on_failure:
-          try:
-            pixels = env.get_state().pixels
-            xml = handle.controller._appium_env.page_source()
-            logcat = handle.controller._appium_env.dump_logcat()
-            writer.write_failure_bundle(
-                pixels=pixels, xml=xml, logcat=logcat, error=error_msg
-            )
-          except Exception as art_exc:  # pylint: disable=broad-except
-            logging.warning(
-                'ParallelRunner: artefact collection failed for %s: %s',
-                sandbox_id,
-                art_exc,
-            )
-
-      finally:
-        # Tear down task (best-effort).
+      # Collect failure artefacts.
+      if self._cfg.dump_logcat_on_failure:
         try:
-          inst.task.tear_down(env)
-        except Exception:  # pylint: disable=broad-except
-          pass
+          pixels = env.get_state().pixels
+          xml = handle.controller._appium_env.page_source()
+          logcat = handle.controller._appium_env.dump_logcat()
+          writer.write_failure_bundle(
+              pixels=pixels, xml=xml, logcat=logcat, error=error_msg
+          )
+        except Exception as art_exc:  # pylint: disable=broad-except
+          logging.warning(
+              'ParallelRunner: artefact collection failed for %s: %s',
+              sandbox_id,
+              art_exc,
+          )
 
-        # Write result.
-        duration = time.monotonic() - t_start
-        result = EpisodeResult(
-            task_name=inst.task_name,
-            seed=inst.seed,
-            is_successful=is_successful,
-            episode_length=episode_length,
-            error=error_msg,
-            sandbox_id=sandbox_id,
-            duration_secs=duration,
-        )
-        writer.write_result(result.to_dict())
-        writer.end_task()
+    finally:
+      # Tear down task (best-effort).
+      try:
+        inst.task.tear_down(env)
+      except Exception:  # pylint: disable=broad-except
+        pass
 
-        # Checkpoint (serialised).
-        if self._checkpointer is not None:
-          self._save_checkpoint(result)
+      # Write result.
+      duration = time.monotonic() - t_start
+      result = EpisodeResult(
+          task_name=inst.task_name,
+          seed=inst.seed,
+          is_successful=is_successful,
+          episode_length=episode_length,
+          error=error_msg,
+          sandbox_id=sandbox_id,
+          duration_secs=duration,
+      )
+      writer.write_result(result.to_dict())
+      writer.end_task()
+
+      # Checkpoint (serialised).
+      if self._checkpointer is not None:
+        self._save_checkpoint(result)
 
     return result
 
@@ -309,9 +350,9 @@ class ParallelRunner:
         'sandbox_id': result.sandbox_id,
         'duration_secs': result.duration_secs,
     }
-    # IncrementalCheckpointer key: "<task_name>_<seed>" so each (task, seed)
-    # combination gets its own file and can be resumed independently.
-    instance_key = f'{result.task_name}_{result.seed}'
+    # IncrementalCheckpointer key: include sandbox_id to avoid collisions
+    # when the same (task, seed) runs on multiple sandboxes.
+    instance_key = f'{result.task_name}_{result.seed}_{result.sandbox_id}'
     with self._checkpoint_lock:
       try:
         self._checkpointer.save_episodes([episode], instance_key)

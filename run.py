@@ -401,29 +401,33 @@ def _run_parallel(agentruntime_cfg) -> None:
   agentruntime_cfg.validate()
 
   # ---- build suite (no env needed for param generation) ----
+  # Each sandbox runs the full suite independently.  TaskEval objects are
+  # stateful, so each sandbox gets its own fresh set of instances.
   task_registry = registry.TaskRegistry()
-  suite = suite_utils.create_suite(
-      task_registry.get_registry(family=_SUITE_FAMILY.value),
-      n_task_combinations=_N_TASK_COMBINATIONS.value,
-      seed=_TASK_RANDOM_SEED.value,
-      tasks=_TASKS.value,
-      use_identical_params=_FIXED_TASK_SEED.value,
-  )
-  suite.suite_family = _SUITE_FAMILY.value
-
-  # Flatten Suite → list[TaskInstance] preserving (task_name, seed) tuples.
   instances: list[TaskInstance] = []
-  for task_name, task_list in suite.items():
-    for task_obj in task_list:
-      seed = task_obj.params.get('seed', 0) or 0
-      instances.append(TaskInstance(
-          task_name=task_name,
-          task=task_obj,
-          seed=seed,
-      ))
+  for sandbox_idx in range(agentruntime_cfg.sandbox_count):
+    suite = suite_utils.create_suite(
+        task_registry.get_registry(family=_SUITE_FAMILY.value),
+        n_task_combinations=_N_TASK_COMBINATIONS.value,
+        seed=_TASK_RANDOM_SEED.value,
+        tasks=_TASKS.value,
+        use_identical_params=_FIXED_TASK_SEED.value,
+    )
+    suite.suite_family = _SUITE_FAMILY.value
+    for task_name, task_list in suite.items():
+      for task_obj in task_list:
+        seed = task_obj.params.get('seed', 0) or 0
+        instances.append(TaskInstance(
+            task_name=task_name,
+            task=task_obj,
+            seed=seed,
+            sandbox_idx=sandbox_idx,
+        ))
 
+  n_per_sandbox = len(instances) // max(agentruntime_cfg.sandbox_count, 1)
   print(
-      f'[Parallel] {len(instances)} task instance(s) across '
+      f'[Parallel] {len(instances)} task instance(s) '
+      f'({n_per_sandbox} per sandbox) across '
       f'{agentruntime_cfg.sandbox_count} sandbox(es).  '
       f'Agent: {_AGENT_NAME.value}.'
   )
@@ -479,6 +483,21 @@ def _run_parallel(agentruntime_cfg) -> None:
   n_success = sum(1 for r in results if r.is_successful == 1.0)
   n_error = sum(1 for r in results if r.error)
 
+  # Aggregate per unique task (across sandboxes).
+  from collections import defaultdict as _defaultdict  # pylint: disable=g-import-not-at-top
+  task_results: dict[str, list[float]] = _defaultdict(list)
+  for r in results:
+    task_results[r.task_name].append(r.is_successful)
+
+  n_unique_tasks = len(task_results)
+  sandbox_count = agentruntime_cfg.sandbox_count
+  # A task "passes" if it succeeded on ALL sandboxes (strict) or majority.
+  # Use strict: passed on at least 1 sandbox counts as capable.
+  n_task_success = sum(
+      1 for scores in task_results.values() if any(s == 1.0 for s in scores)
+  )
+  task_success_rate = n_task_success / n_unique_tasks if n_unique_tasks else 0.0
+
   # Write details.json — one entry per task instance.
   import json as _json  # pylint: disable=g-import-not-at-top
   import datetime as _datetime  # pylint: disable=g-import-not-at-top
@@ -489,11 +508,15 @@ def _run_parallel(agentruntime_cfg) -> None:
       'timestamp': _datetime.datetime.now().isoformat(),
       'suite_family': _SUITE_FAMILY.value,
       'agent_name': _AGENT_NAME.value,
-      'n_total': n_total,
-      'n_success': n_success,
+      'n_unique_tasks': n_unique_tasks,
+      'n_total_runs': n_total,
+      'n_total_per_sandbox': n_per_sandbox,
+      'n_task_success': n_task_success,
+      'n_run_success': n_success,
       'n_error': n_error,
-      'success_rate': round(n_success / n_total, 4) if n_total else 0.0,
-      'sandbox_count': agentruntime_cfg.sandbox_count,
+      'task_success_rate': round(task_success_rate, 4),
+      'run_success_rate': round(n_success / n_total, 4) if n_total else 0.0,
+      'sandbox_count': sandbox_count,
       'sandboxes': sorted({r.sandbox_id for r in results}),
       'checkpoint_dir': checkpoint_dir,
   }
@@ -511,17 +534,35 @@ def _run_parallel(agentruntime_cfg) -> None:
     logging.warning('Could not write summary/details JSON: %s', exc)
 
   # Console summary table.
+  # Per-task stability breakdown.
+  stability_lines = []
+  for task_name in sorted(task_results.keys()):
+    scores = task_results[task_name]
+    passed = sum(1 for s in scores if s == 1.0)
+    total = len(scores)
+    mark = '\u2705' if passed == total else ('\u26a0\ufe0f' if passed > 0 else '\u274c')
+    stability_lines.append(
+        f'    {task_name:<40s} {passed}/{total} {mark}'
+    )
+  stability_block = '\n'.join(stability_lines)
+
   print(
-      f'\n[Parallel] ─── Benchmark complete ───────────────────────────\n'
+      f'\n[Parallel] \u2500\u2500\u2500 Benchmark complete \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n'
       f'  Suite      : {_SUITE_FAMILY.value}\n'
       f'  Agent      : {_AGENT_NAME.value}\n'
-      f'  Tasks      : {n_total}  |  Success: {n_success}  |  Errors: {n_error}\n'
-      f'  Rate       : {summary["success_rate"]:.1%}\n'
+      f'  Tasks      : {n_unique_tasks} (\u00d7 {sandbox_count} sandboxes)'
+      f'  |  Success: {n_task_success}/{n_unique_tasks}'
+      f'  |  Errors: {n_error}\n'
+      f'  Rate       : {task_success_rate:.1%}\n'
+      f'\n'
+      f'  Per-task stability:\n'
+      f'{stability_block}\n'
+      f'\n'
       f'  Output dir : {checkpoint_dir}\n'
-      f'    ├─ details.json   (per-task results)\n'
-      f'    ├─ summary.json   (aggregate stats)\n'
-      f'    └─ <sandbox_id>/  (per-sandbox logs & screenshots)\n'
-      f'──────────────────────────────────────────────────────────────'
+      f'    \u251c\u2500 details.json   (per-task results)\n'
+      f'    \u251c\u2500 summary.json   (aggregate stats)\n'
+      f'    \u2514\u2500 <sandbox_id>/  (per-sandbox logs & screenshots)\n'
+      f'\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500'
   )
 
 
