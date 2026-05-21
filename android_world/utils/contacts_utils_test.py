@@ -98,8 +98,9 @@ class TestContactsUtils(absltest.TestCase):
         "com.android.providers.contacts",
     ]
 
-    # Assert that the correct adb command was issued
-    mock_generic_request.assert_called_once_with(expected_adb_command, mock_env)
+    # clear_app_data may fall back to force-stop for system apps; verify pm
+    # clear was at least attempted.
+    mock_generic_request.assert_any_call(expected_adb_command, mock_env)
 
 
 if __name__ == "__main__":

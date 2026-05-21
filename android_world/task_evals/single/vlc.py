@@ -14,27 +14,6 @@
 
 """Tasks for VLC player."""
 
-# =============================================================================
-# 【修改说明】_VLC.initialize_task 增加 pre-warm 逻辑。
-# 修改日期：2026-05-14
-#
-# 修改内容：
-#   新增 _prewarm_vlc()，在 _VLC.initialize_task 中调用。
-#   检测 VLC 的 vlc_media.db 是否存在，若不存在则用 monkey 启动 VLC 一次
-#   （触发 db 创建），再 force-stop。
-#
-# 修改原因：
-#   VLC 每次 setup 会执行 pm clear，清空 app_db 目录。
-#   若在全集跑时两个 VLC task 之间有其他 task 触发了 pm clear（或容器重启），
-#   /data/data/org.videolan.vlc/app_db/vlc_media.db 会消失，导致 INIT_FAIL。
-#   此问题在 redroid 上必然发生（无快照恢复），在 Emulator 上也可能发生。
-#
-# 对评测语义/难度的影响：无。
-#   - pre-warm 仅确保 VLC 数据库存在，不改变 app 的功能行为。
-#   - agent 的任务目标（播放/管理媒体）和评估标准完全不变。
-#   - pre-warm 在 agent 开始操作之前完成，不影响 agent 的交互流程。
-# =============================================================================
-
 import os
 import random
 import time
@@ -42,6 +21,7 @@ from typing import Any
 from absl import logging
 from android_world.env import adb_utils
 from android_world.env import interface
+from android_world.env import tools
 from android_world.env.setup_device import apps
 from android_world.task_evals import task_eval
 from android_world.task_evals.common_validators import sqlite_validators
@@ -112,24 +92,77 @@ def _get_playlist_file_info(
     env: interface.AsyncEnv,
 ) -> list[sqlite_schema_utils.PlaylistInfo]:
   """Executes join query to fetch playlist file info."""
-  with env.controller.pull_file(_DB_PATH, timeout_sec=3) as local_db_directory:
-    local_db_path = file_utils.convert_to_posix_path(
-        local_db_directory, os.path.split(_DB_PATH)[1]
-    )
-    return sqlite_utils.execute_query(
-        _get_playlist_info_query(),
-        local_db_path,
-        sqlite_schema_utils.PlaylistInfo,
-    )
+  try:
+    with env.controller.pull_file(_DB_PATH, timeout_sec=3) as local_db_directory:
+      local_db_path = file_utils.convert_to_posix_path(
+          local_db_directory, os.path.split(_DB_PATH)[1]
+      )
+      return sqlite_utils.execute_query(
+          _get_playlist_info_query(),
+          local_db_path,
+          sqlite_schema_utils.PlaylistInfo,
+      )
+  except FileNotFoundError:
+    # DB does not exist yet (VLC setup never ran or agent never created a
+    # playlist), so there are no playlists to report.
+    return []
 
 
 class _VLC(task_eval.TaskEval):
 
   def initialize_task(self, env: interface.AsyncEnv):
     super().initialize_task(env)
+    self._ensure_vlc_ready(env)
     user_data_generation.clear_internal_storage(env)
     file_utils.clear_directory(apps.VlcApp.videos_path, env.controller)
     _prewarm_vlc(env)  # ensure vlc_media.db exists before touching it
+
+  def _ensure_vlc_ready(self, env: interface.AsyncEnv):
+    """Ensure VLC has storage permission and media DB is initialized."""
+    package = 'org.videolan.vlc'
+    # Grant all-files-access (MANAGE_EXTERNAL_STORAGE) via appops.
+    adb_utils.issue_generic_request(
+        ['shell', 'appops', 'set', package, 'MANAGE_EXTERNAL_STORAGE', 'allow'],
+        env.controller,
+    )
+    # Also grant standard storage permissions.
+    for perm in (
+        'android.permission.READ_EXTERNAL_STORAGE',
+        'android.permission.WRITE_EXTERNAL_STORAGE',
+    ):
+      adb_utils.issue_generic_request(
+          ['shell', 'pm', 'grant', package, perm],
+          env.controller,
+      )
+    # Ensure videos directory exists.
+    if not file_utils.check_directory_exists(
+        apps.VlcApp.videos_path, env.controller
+    ):
+      file_utils.mkdir(apps.VlcApp.videos_path, env.controller)
+    # If vlc_media.db doesn't exist, complete the first-run wizard to create it.
+    if not sqlite_utils.table_exists('Playlist', _DB_PATH, env):
+      self._complete_vlc_first_run(env)
+
+  def _complete_vlc_first_run(self, env: interface.AsyncEnv):
+    """Launch VLC and complete its first-run wizard to create vlc_media.db."""
+    # monkey launch simulates launcher tap (same as apps.py setup).
+    adb_utils.issue_generic_request(
+        ['shell', 'monkey', '-p', 'org.videolan.vlc',
+         '-c', 'android.intent.category.LAUNCHER', '1'],
+        env.controller,
+    )
+    time.sleep(3.0)
+    # Complete the first-run wizard by clicking Skip.
+    controller = tools.AndroidToolController(env=env.controller)
+    try:
+      controller.click_element("Skip")
+    except Exception:  # pylint: disable=broad-except
+      try:
+        controller.click_element("跳过")
+      except Exception:  # pylint: disable=broad-except
+        logging.warning("VLC first-run wizard skip button not found.")
+    time.sleep(5.0)
+    adb_utils.close_app(_APP_NAME, env.controller)
 
   def tear_down(self, env: interface.AsyncEnv):
     super().tear_down(env)

@@ -1,0 +1,21 @@
+# =============================================================================
+# Sandboxes List — Example
+# =============================================================================
+# Copy this file to sandboxes.yaml and fill in your actual sandbox IDs.
+#
+# Usage:
+#   python run.py --agent_name=t3a_gpt4 --sandboxes_yaml=sandboxes.yaml
+#
+# When --sandboxes_yaml is provided:
+#   - execution_mode is automatically set to parallel
+#   - sandbox_count is derived from the number of IDs listed here
+#   - Sandboxes are connected to (not created/destroyed) — keep_sandbox=True
+#
+# To get sandbox IDs, list your running sandboxes via the E2B dashboard or CLI:
+#   e2b sandbox list
+# =============================================================================
+
+sandbox_ids:
+  - xxx  # replace with your actual sandbox ID, e.g. abc12345
+  - xxx
+  - xxx

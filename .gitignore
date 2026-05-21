@@ -25,13 +25,16 @@ poetry.lock
 .idea
 
 # Local secrets (API keys, endpoint overrides). See .env.local.example.
+.env
 .env.local
+sandboxes.yaml
 
 # Local venv created by uv / python -m venv.
 .venv/
 
-# Local operational scripts that should not be committed
-# (see docs/HANDOFF-AndroidWorld主入口文档.md §13.5).
+.codebuddy
+
+# Local operational scripts that should not be committed.
 /keep_tunnel.sh
 /run_full_suite.sh
 
@@ -39,3 +42,6 @@ poetry.lock
 ./docs
 
 /android_world_apks
+
+# Benchmark run outputs.
+/output/runs/

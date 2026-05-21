@@ -69,7 +69,7 @@ _PATTERN_TO_ACTIVITY = immutabledict.immutabledict({
     'google chat': (
         'com.google.android.apps.dynamite/com.google.android.apps.dynamite.startup.StartUpActivity'
     ),
-    'settings|system settings': 'com.android.settings/.Settings',
+    'settings|system settings|设置': 'com.android.settings/.Settings',
     'youtube|yt': (
         'com.google.android.youtube/com.google.android.apps.youtube.app.WatchWhileActivity'
     ),
@@ -88,7 +88,7 @@ _PATTERN_TO_ACTIVITY = immutabledict.immutabledict({
     'google calendar|gcal': (
         'com.google.android.calendar/com.android.calendar.AllInOneActivity'
     ),
-    'camera': 'com.android.camera2/com.android.camera.CameraLauncher',
+    'camera|相机': 'com.android.camera2/com.android.camera.CameraLauncher',
     'audio recorder': (
         'com.dimowner.audiorecorder/com.dimowner.audiorecorder.app.welcome.WelcomeActivity'
     ),
@@ -117,11 +117,11 @@ _PATTERN_TO_ACTIVITY = immutabledict.immutabledict({
     'google voice|voice': (
         'com.google.android.apps.googlevoice/com.google.android.apps.googlevoice.SplashActivity'
     ),
-    'clock': 'com.google.android.deskclock/com.android.deskclock.DeskClock',
+    'clock|desk clock|时钟': 'com.google.android.deskclock/com.android.deskclock.DeskClock',
     'google search|google': (
         'com.google.android.googlequicksearchbox/com.google.android.googlequicksearchbox.SearchActivity'
     ),
-    'contacts': (
+    'contacts|通讯录': (
         'com.google.android.contacts/com.android.contacts.activities.PeopleActivity'
     ),
     'facebook|fb': 'com.facebook.katana/com.facebook.katana.LoginActivity',
@@ -149,18 +149,18 @@ _PATTERN_TO_ACTIVITY = immutabledict.immutabledict({
     'reddit': 'com.reddit.frontpage/com.reddit.frontpage.MainActivity',
     'pinterest': 'com.pinterest/com.pinterest.activity.PinterestActivity',
     'android world': 'com.example.androidworld/.MainActivity',
-    'files': (
+    'files|文件|downloads|下载|documents|文档': (
         'com.google.android.documentsui/com.android.documentsui.files.FilesActivity'
     ),
     'markor': 'net.gsantner.markor/net.gsantner.markor.activity.MainActivity',
     'clipper': 'ca.zgrs.clipper/ca.zgrs.clipper.Main',
-    'messages': (
+    'messages|信息': (
         'com.google.android.apps.messaging/com.google.android.apps.messaging.ui.ConversationListActivity'
     ),
     'simple sms messenger|simple sms': (
         'com.simplemobiletools.smsmessenger/com.simplemobiletools.smsmessenger.activities.MainActivity'
     ),
-    'dialer|phone': (
+    'dialer|phone|电话': (
         'com.google.android.dialer/com.google.android.dialer.extensions.GoogleDialtactsActivity'
     ),
     'simple calendar pro|simple calendar': (
@@ -642,7 +642,7 @@ def issue_generic_request(
 def get_adb_activity(app_name: str) -> Optional[str]:
   """Get a mapping of regex patterns to ADB activities top Android apps."""
   for pattern, activity in _PATTERN_TO_ACTIVITY.items():
-    if re.match(pattern.lower(), app_name.lower()):
+    if re.search(pattern.lower(), app_name.lower()):
       return activity
 
 
@@ -1205,7 +1205,24 @@ def clear_app_data(
     adb status.
   """
   try:
-    return issue_generic_request(['shell', 'pm', 'clear', package_name], env)
+    response = issue_generic_request(
+        ['shell', 'pm', 'clear', package_name], env
+    )
+    # On some system apps (e.g. Chrome, DeskClock) 'pm clear' exits with code 1
+    # and StdErr "Failed" because the package is on the system partition.
+    # Fall back to force-stop so the app at least isn't running in the
+    # foreground, even if we cannot wipe its data.
+    output = ''
+    if hasattr(response, 'generic') and response.generic.output:
+      output = response.generic.output.decode('utf-8', errors='replace')
+    if response.status != adb_pb2.AdbResponse.Status.OK or 'failed' in output.lower():
+      logging.warning(
+          'pm clear failed for %s (likely a system app); falling back to'
+          ' force-stop.',
+          package_name,
+      )
+      issue_generic_request(['shell', 'am', 'force-stop', package_name], env)
+    return response
   except errors.AdbControllerError as exc:
     raise errors.AdbControllerError(
         f'Failed to clear app data for package {package_name}. Is the app'

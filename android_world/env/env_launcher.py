@@ -14,21 +14,9 @@
 
 """Launches the environment used in the benchmark."""
 
-# =============================================================================
-# 【修改说明】增加 redroid 设备后端支持。
-# 修改日期：2026-05-14
-#
-# 修改内容：
-#   1. DeviceMode 枚举增加 REDROID 选项。
-#   2. load_and_setup_env 根据 device_mode 选择 Emulator 或 Redroid 后端。
-#   3. Redroid 模式下使用 adb 直连，无需 gRPC/emulator console。
-#
-# 对评测语义/难度的影响：无。
-#   - 纯基础设施层的设备后端选择，不改变任务目标、评估标准或 agent 交互流程。
-# =============================================================================
-
 import enum
 import platform
+from typing import Optional
 
 from absl import logging
 from android_world.env import android_world_controller
@@ -37,13 +25,14 @@ from android_world.utils import datetime_utils
 
 
 # AndroidWorld is tested and developed on Pixel 6 with API 33. Other
-# configurations may be supported, but are not yet tested.
+# configurations may be supported, but are not tested.
 _ANDROID_WORLD_API_LEVEL = 33
 
 
 class DeviceMode(str, enum.Enum):
   EMULATOR = 'emulator'
   REDROID = 'redroid'
+  AGENTRUNTIME = 'agentruntime'
 
 
 def _normalize_device_mode(device_mode: str | DeviceMode) -> DeviceMode:
@@ -59,9 +48,18 @@ def _get_env(
     device_mode: str | DeviceMode = DeviceMode.EMULATOR,
     adb_device_name: str | None = None,
     a11y_method: android_world_controller.A11yMethod | None = None,
+    agentruntime_config=None,
 ) -> interface.AsyncEnv:
   """Creates an AsyncEnv by connecting to an existing Android environment."""
   device_mode = _normalize_device_mode(device_mode)
+
+  if device_mode == DeviceMode.AGENTRUNTIME:
+    # Import lazily so that Appium / E2B deps are optional for users who only
+    # use the emulator or redroid backends.
+    from android_world.env.agentruntime import appium_controller as ac  # pylint: disable=g-import-not-at-top
+    controller = ac.create_appium_controller(agentruntime_config)
+    return interface.AsyncAndroidEnv(controller)
+
   controller = android_world_controller.get_controller(
       console_port=console_port,
       adb_path=adb_path,
@@ -138,6 +136,7 @@ def load_and_setup_env(
     device_mode: str | DeviceMode = DeviceMode.EMULATOR,
     adb_device_name: str | None = None,
     a11y_method: android_world_controller.A11yMethod | None = None,
+    agentruntime_config=None,
 ) -> interface.AsyncEnv:
   """Create environment with `get_env()` and perform env setup and validation.
 
@@ -160,10 +159,34 @@ def load_and_setup_env(
     device_mode: Which device backend to use.
     adb_device_name: Explicit adb serial/endpoint, required for redroid mode.
     a11y_method: Optional accessibility retrieval method override.
+    agentruntime_config: ``AgentRuntimeConfig`` instance, required when
+      ``device_mode=DeviceMode.AGENTRUNTIME``.
 
   Returns:
     An interactable Android environment.
   """
+  device_mode = _normalize_device_mode(device_mode)
+
+  # AgentRuntime mode skips emulator_setup and freeze_datetime by default
+  # because those operations rely on ADB-level device control that is not
+  # available in the Appium-only pipeline.
+  if device_mode == DeviceMode.AGENTRUNTIME:
+    env = _get_env(
+        console_port,
+        adb_path,
+        grpc_port,
+        device_mode=device_mode,
+        adb_device_name=adb_device_name,
+        a11y_method=a11y_method,
+        agentruntime_config=agentruntime_config,
+    )
+    _increase_file_descriptor_limit()
+    # Note: freeze_datetime and emulator_setup are intentionally skipped for
+    # agentruntime mode.  Time control can be attempted through mobile:shell,
+    # but is not guaranteed to work; tasks that are time-sensitive will need
+    # individual handling.
+    return env
+
   env = _get_env(
       console_port,
       adb_path,

@@ -224,7 +224,17 @@ def _get_mmssms_db_path(env: env_interface.AndroidEnvInterface) -> str:
 
 def clear_sms_and_threads(env: env_interface.AndroidEnvInterface) -> None:
   """Removes all messages from UI by clearing the sms and threads tables."""
-  if getattr(env, 'device_mode', '') == 'redroid':
+  device_mode = getattr(env, 'device_mode', '')
+
+  if device_mode == 'agentruntime':
+    # AgentRuntime (Appium bridge): no root/sqlite, use content provider URIs.
+    for uri in ('content://sms', 'content://mms-sms/conversations'):
+      adb_utils.issue_generic_request(
+          ['shell', 'content', 'delete', '--uri', uri], env
+      )
+    return
+
+  if device_mode == 'redroid':
     # On redroid, sqlite3 DELETE on the sms table fires the sms_words_delete
     # trigger which touches the FTS "words" virtual table.  Without
     # PRAGMA trusted_schema=ON this fails and the delete is silently skipped.
@@ -236,6 +246,8 @@ def clear_sms_and_threads(env: env_interface.AndroidEnvInterface) -> None:
     adb_utils.issue_generic_request(
         ['shell', 'content delete --uri content://sms'], env)
     return
+
+  # Emulator: direct sqlite access.
   db_path = _get_mmssms_db_path(env)
   adb_utils.execute_sql_command(db_path, "DELETE FROM sms;", env)
   adb_utils.execute_sql_command(db_path, "DELETE FROM threads;", env)
