@@ -30,6 +30,7 @@ from absl import logging
 from android_world import registry
 from android_world.agents import infer
 from android_world.agents import t3a
+from android_world.env import android_world_controller
 from android_world.env import env_launcher
 from android_world.task_evals import task_eval
 
@@ -37,6 +38,34 @@ logging.set_verbosity(logging.WARNING)
 
 os.environ['GRPC_VERBOSITY'] = 'ERROR'  # Only show errors
 os.environ['GRPC_TRACE'] = 'none'  # Disable tracing
+
+
+def _load_local_env() -> None:
+  """Loads KEY=VALUE lines from ./.env.local if present.
+
+  Called at module import time so that flag defaults that read from os.environ
+  (e.g. --model_name defaulting to $OPENAI_MODEL_NAME) see values from
+  .env.local. Existing os.environ entries always win.
+  """
+  path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env.local')
+  if not os.path.isfile(path):
+    return
+  try:
+    with open(path, 'r', encoding='utf-8') as f:
+      for raw in f:
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+          continue
+        key, _, value = line.partition('=')
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+          os.environ[key] = value
+  except OSError:
+    pass
+
+
+_load_local_env()
 
 
 def _find_adb_directory() -> str:
@@ -75,20 +104,61 @@ _DEVICE_CONSOLE_PORT = flags.DEFINE_integer(
     ' first connected device is port 5554, the second is 5556, and'
     ' so on.',
 )
+_DEVICE_MODE = flags.DEFINE_enum(
+    'device_mode',
+    env_launcher.DeviceMode.EMULATOR.value,
+    [mode.value for mode in env_launcher.DeviceMode],
+    'Which device backend to use.',
+)
+_ADB_DEVICE_NAME = flags.DEFINE_string(
+    'adb_device_name',
+    '',
+    'Explicit adb serial/endpoint. Required for redroid mode.',
+)
+_GRPC_PORT = flags.DEFINE_integer(
+    'grpc_port',
+    8554,
+    'The port for gRPC communication with the emulator backend.',
+)
+_A11Y_METHOD = flags.DEFINE_string(
+    'a11y_method',
+    '',
+    'Optional accessibility retrieval method override. Empty means "do not'
+    ' override" (the controller picks a sensible default per device_mode).'
+    ' Valid non-empty values: '
+    + '|'.join(m.value for m in android_world_controller.A11yMethod)
+    + '.',
+)
 
 _TASK = flags.DEFINE_string(
     'task',
     None,
     'A specific task to run.',
 )
+_MODEL_NAME = flags.DEFINE_string(
+    'model_name',
+    os.environ.get('OPENAI_MODEL_NAME', 'gpt-4-turbo-2024-04-09'),
+    'Model name passed to the LLM wrapper. For OpenAI-compatible endpoints'
+    ' (e.g. Tencent LKEAP) set this to a model the endpoint serves and also'
+    ' export OPENAI_BASE_URL. Defaults to OPENAI_MODEL_NAME env var if set.',
+)
 
 
 def _main() -> None:
   """Runs a single task."""
+  a11y_method = (
+      android_world_controller.A11yMethod(_A11Y_METHOD.value)
+      if _A11Y_METHOD.value
+      else None
+  )
   env = env_launcher.load_and_setup_env(
       console_port=_DEVICE_CONSOLE_PORT.value,
       emulator_setup=_EMULATOR_SETUP.value,
       adb_path=_ADB_PATH.value,
+      grpc_port=_GRPC_PORT.value,
+      device_mode=_DEVICE_MODE.value,
+      adb_device_name=_ADB_DEVICE_NAME.value or None,
+      a11y_method=a11y_method,
   )
   env.reset(go_home=True)
   task_registry = registry.TaskRegistry()
@@ -104,7 +174,7 @@ def _main() -> None:
   params = task_type.generate_random_params()
   task = task_type(params)
   task.initialize_task(env)
-  agent = t3a.T3A(env, infer.Gpt4Wrapper('gpt-4-turbo-2024-04-09'))
+  agent = t3a.T3A(env, infer.Gpt4Wrapper(_MODEL_NAME.value))
 
   print('Goal: ' + str(task.goal))
   is_done = False

@@ -14,12 +14,25 @@
 
 """Launches the environment used in the benchmark."""
 
+# =============================================================================
+# 【修改说明】增加 redroid 设备后端支持。
+# 修改日期：2026-05-14
+#
+# 修改内容：
+#   1. DeviceMode 枚举增加 REDROID 选项。
+#   2. load_and_setup_env 根据 device_mode 选择 Emulator 或 Redroid 后端。
+#   3. Redroid 模式下使用 adb 直连，无需 gRPC/emulator console。
+#
+# 对评测语义/难度的影响：无。
+#   - 纯基础设施层的设备后端选择，不改变任务目标、评估标准或 agent 交互流程。
+# =============================================================================
+
+import enum
 import platform
 
 from absl import logging
 from android_world.env import android_world_controller
 from android_world.env import interface
-from android_world.env.setup_device import setup
 from android_world.utils import datetime_utils
 
 
@@ -28,12 +41,34 @@ from android_world.utils import datetime_utils
 _ANDROID_WORLD_API_LEVEL = 33
 
 
+class DeviceMode(str, enum.Enum):
+  EMULATOR = 'emulator'
+  REDROID = 'redroid'
+
+
+def _normalize_device_mode(device_mode: str | DeviceMode) -> DeviceMode:
+  if isinstance(device_mode, DeviceMode):
+    return device_mode
+  return DeviceMode(device_mode)
+
+
 def _get_env(
-    console_port: int, adb_path: str, grpc_port: int
+    console_port: int,
+    adb_path: str,
+    grpc_port: int,
+    device_mode: str | DeviceMode = DeviceMode.EMULATOR,
+    adb_device_name: str | None = None,
+    a11y_method: android_world_controller.A11yMethod | None = None,
 ) -> interface.AsyncEnv:
   """Creates an AsyncEnv by connecting to an existing Android environment."""
+  device_mode = _normalize_device_mode(device_mode)
   controller = android_world_controller.get_controller(
-      console_port, adb_path, grpc_port
+      console_port=console_port,
+      adb_path=adb_path,
+      grpc_port=grpc_port,
+      device_mode=device_mode,
+      adb_device_name=adb_device_name,
+      a11y_method=a11y_method,
   )
   return interface.AsyncAndroidEnv(controller)
 
@@ -87,6 +122,7 @@ def setup_env(
   _increase_file_descriptor_limit()
   if emulator_setup:
     logging.info('Setting up apps on the emulator.')
+    from android_world.env.setup_device import setup  # pylint: disable=g-import-not-at-top
     setup.setup_apps(env)
   if freeze_datetime:
     logging.info('Freezing datetime.')
@@ -99,6 +135,9 @@ def load_and_setup_env(
     freeze_datetime: bool = True,
     adb_path: str = android_world_controller.DEFAULT_ADB_PATH,
     grpc_port: int = 8554,
+    device_mode: str | DeviceMode = DeviceMode.EMULATOR,
+    adb_device_name: str | None = None,
+    a11y_method: android_world_controller.A11yMethod | None = None,
 ) -> interface.AsyncEnv:
   """Create environment with `get_env()` and perform env setup and validation.
 
@@ -118,10 +157,20 @@ def load_and_setup_env(
       2023, to ensure consistent benchmarking.
     adb_path: The location of the adb binary.
     grpc_port: The port for gRPC communication with the emulator.
+    device_mode: Which device backend to use.
+    adb_device_name: Explicit adb serial/endpoint, required for redroid mode.
+    a11y_method: Optional accessibility retrieval method override.
 
   Returns:
     An interactable Android environment.
   """
-  env = _get_env(console_port, adb_path, grpc_port)
+  env = _get_env(
+      console_port,
+      adb_path,
+      grpc_port,
+      device_mode=device_mode,
+      adb_device_name=adb_device_name,
+      a11y_method=a11y_method,
+  )
   setup_env(env, emulator_setup, freeze_datetime)
   return env

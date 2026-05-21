@@ -19,6 +19,28 @@ and performing setup tasks specific to that app using the Android Environment
 Interface.
 """
 
+# =============================================================================
+# 【修改说明】适配 redroid 环境的应用安装和设置。
+# 修改日期：2026-05-14, 2026-05-21
+#
+# 修改内容（跨 39f406b 提交和后续未提交变更）：
+#   1. download_app_data：增加 local_apk_dir 参数，优先从本地目录查找 APK，
+#      避免 redroid 环境下无 GCS 访问权限时下载失败。
+#   2. ChromeApp：增加 apk_names 属性，指定 Chrome 148 APK 文件名，
+#      redroid 镜像不预装 Chrome，需显式安装。
+#   3. ClipperApp.setup：
+#      - 增加 ime enable ca.zgrs.clipper/.ClipboardIME，配合 adb_utils 中
+#        set_clipboard_contents 的 IME 特权路径（Android 14+ 普通进程无法写入
+#        剪贴板，需先将 clipper 激活为输入法）。
+#      - 移除 launch + close 步骤：ClipperReceiver 通过 SharedPreferences cache
+#        读取剪贴板，无需前台运行；set 操作也改为 IME 路径，不再需要启动 Activity。
+#
+# 对评测语义/难度的影响：无。
+#   - 所有修改均为安装/设置流程的平台适配，不改变任务目标、评估标准
+#     或 agent 交互流程。ClipperApp.setup 变更不影响评测逻辑，
+#     Clipper 仅用于 get/set clipboard 工具函数，功能行为等价。
+# =============================================================================
+
 import abc
 import os
 import time
@@ -36,8 +58,27 @@ APP_DATA = file_utils.convert_to_posix_path(os.path.dirname(__file__),
 'app_data')
 
 
-def download_app_data(file_name: str) -> str:
-  """Downloads file from a GCS bucket, if not cached, and installs it."""
+def download_app_data(file_name: str, local_apk_dir: str | None = None) -> str:
+  """Downloads file from a GCS bucket, if not cached, and installs it.
+
+  When ``local_apk_dir`` is provided (e.g. in redroid mode), the function
+  first checks that directory for the APK and returns it directly if found.
+  This avoids unnecessary network downloads when APKs have been pre-staged
+  on the host or inside the container.
+
+  Args:
+    file_name: The APK file name to download or locate.
+    local_apk_dir: Optional local directory to check before downloading.
+
+  Returns:
+    Absolute path to the APK file.
+  """
+  if local_apk_dir is not None:
+    local_path = file_utils.convert_to_posix_path(local_apk_dir, file_name)
+    if os.path.isfile(local_path):
+      logging.info("Using local APK %s", local_path)
+      return local_path
+
   cache_dir = file_utils.convert_to_posix_path(
       file_utils.get_local_tmp_directory(), "android_world", "app_data"
   )
@@ -149,8 +190,11 @@ class CameraApp(AppSetup):
 
 
 class ChromeApp(AppSetup):
-  """Class for setting up pre-installed Chrome app."""
+  """Class for setting up Chrome app."""
 
+  apk_names = (
+      "com.android.chrome_148.0.7778.120-777812038_25lang_2feat_a71f03d590ae45bcced7d1d410c621ed_apkmirror.com.apkm",
+  )
   app_name = "chrome"
 
   @classmethod
@@ -303,15 +347,18 @@ class ClipperApp(AppSetup):
   @classmethod
   def setup(cls, env: interface.AsyncEnv) -> None:
     super().setup(env)
-    controller = tools.AndroidToolController(env=env.controller)
-    adb_utils.launch_app(cls.app_name, env.controller)
-    try:
-      time.sleep(2.0)
-      controller.click_element("Continue")
-      time.sleep(2.0)
-      controller.click_element("OK")
-    finally:
-      adb_utils.close_app(cls.app_name, env.controller)
+    # 启用 clipper 内置 IME（Android 14+ 剪贴板写入使用 IME 特权路径）
+    adb_utils.issue_generic_request(
+        ['shell', 'ime', 'enable', 'ca.zgrs.clipper/.ClipboardIME'],
+        env.controller,
+    )
+    # Grant READ_CLIPBOARD appop so ClipperReceiver can read clipboard in
+    # background on Android 10+ (default is denied for background apps).
+    adb_utils.issue_generic_request(
+        ['shell', 'cmd', 'appops', 'set', 'ca.zgrs.clipper',
+         'READ_CLIPBOARD', 'allow'],
+        env.controller,
+    )
 
 
 class SimpleCalendarProApp(AppSetup):

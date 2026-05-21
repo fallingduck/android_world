@@ -29,6 +29,7 @@ from android_env.proto.a11y import android_accessibility_forest_pb2
 from android_env.wrappers import a11y_grpc_wrapper
 from android_env.wrappers import base_wrapper
 from android_world.env import adb_utils
+from android_world.env import redroid_env
 from android_world.env import representation_utils
 from android_world.utils import file_utils
 import dm_env
@@ -164,8 +165,22 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
       env: env_interface.AndroidEnvInterface,
       a11y_method: A11yMethod = A11yMethod.A11Y_FORWARDER_APP,
       install_a11y_forwarding_app: bool = True,
+      device_mode: str = 'emulator',
+      console_port: int = 5554,
+      adb_path: str = DEFAULT_ADB_PATH,
+      grpc_port: int = 8554,
+      adb_device_name: str | None = None,
   ):
     self._original_env = env
+    self._device_mode = device_mode
+    self._reconnect_kwargs = {
+        'device_mode': device_mode,
+        'console_port': console_port,
+        'adb_path': adb_path,
+        'grpc_port': grpc_port,
+        'adb_device_name': adb_device_name,
+        'a11y_method': a11y_method,
+    }
     if a11y_method == A11yMethod.A11Y_FORWARDER_APP:
       self._env = apply_a11y_forwarder_app_wrapper(
           env, install_a11y_forwarding_app
@@ -193,17 +208,14 @@ class AndroidWorldController(base_wrapper.BaseWrapper):
   def env(self) -> env_interface.AndroidEnvInterface:
     return self._env
 
+  @property
+  def device_mode(self) -> str:
+    return self._device_mode
+
   def refresh_env(self):
-    # pylint: disable=protected-access
-    # pytype: disable=attribute-error
-    # Reconnect to emulator and reload a11y wrapper in case we lose connection.
-    self._env = get_controller(
-        console_port=self.env._coordinator._simulator._config.emulator_launcher.emulator_console_port,
-        adb_path=self.env._coordinator._simulator._config.adb_controller.adb_path,
-        grpc_port=self.env._coordinator._simulator._config.emulator_launcher.grpc_port,
-    ).env
-    # pylint: enable=protected-access
-    # pytype: enable=attribute-error
+    new_controller = get_controller(**self._reconnect_kwargs)
+    self._original_env = new_controller._original_env  # pylint: disable=protected-access
+    self._env = new_controller.env
 
   def _get_a11y_forest(
       self,
@@ -308,22 +320,54 @@ def get_controller(
     console_port: int = 5554,
     adb_path: str = DEFAULT_ADB_PATH,
     grpc_port: int = 8554,
+    device_mode: str = 'emulator',
+    adb_device_name: str | None = None,
+    a11y_method: A11yMethod | None = None,
 ) -> AndroidWorldController:
   """Creates a controller by connecting to an existing Android environment."""
 
-  config = config_classes.AndroidEnvConfig(
-      task=config_classes.FilesystemTaskConfig(
-          path=_write_default_task_proto()
-      ),
-      simulator=config_classes.EmulatorConfig(
-          emulator_launcher=config_classes.EmulatorLauncherConfig(
-              emulator_console_port=console_port,
-              adb_port=console_port + 1,
-              grpc_port=grpc_port,
-          ),
-          adb_controller=config_classes.AdbControllerConfig(adb_path=adb_path),
-      ),
-  )
-  android_env_instance = loader.load(config)
+  if a11y_method is None:
+    a11y_method = (
+        A11yMethod.UIAUTOMATOR
+        if device_mode == 'redroid'
+        else A11yMethod.A11Y_FORWARDER_APP
+    )
+
+  if device_mode == 'redroid':
+    if not adb_device_name:
+      raise ValueError(
+          'adb_device_name must be provided when device_mode is redroid.'
+      )
+    android_env_instance = redroid_env.RedroidEnv(
+        adb_path=adb_path,
+        device_name=adb_device_name,
+        adb_server_port=5037,
+    )
+    install_a11y_forwarding_app = False
+  else:
+    config = config_classes.AndroidEnvConfig(
+        task=config_classes.FilesystemTaskConfig(
+            path=_write_default_task_proto()
+        ),
+        simulator=config_classes.EmulatorConfig(
+            emulator_launcher=config_classes.EmulatorLauncherConfig(
+                emulator_console_port=console_port,
+                adb_port=console_port + 1,
+                grpc_port=grpc_port,
+            ),
+            adb_controller=config_classes.AdbControllerConfig(adb_path=adb_path),
+        ),
+    )
+    android_env_instance = loader.load(config)
+    install_a11y_forwarding_app = True
   logging.info('Setting up AndroidWorldController.')
-  return AndroidWorldController(android_env_instance)
+  return AndroidWorldController(
+      android_env_instance,
+      a11y_method=a11y_method,
+      install_a11y_forwarding_app=install_a11y_forwarding_app,
+      device_mode=device_mode,
+      console_port=console_port,
+      adb_path=adb_path,
+      grpc_port=grpc_port,
+      adb_device_name=adb_device_name,
+  )

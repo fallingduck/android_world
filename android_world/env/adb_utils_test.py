@@ -84,6 +84,12 @@ Phone Id=0
 
     self.assertEqual(result.generic.output.decode(), 'Success')
 
+  def test_call_emulator_redroid_is_unsupported(self):
+    self.mock_env.device_mode = 'redroid'
+
+    with self.assertRaises(NotImplementedError):
+      adb_utils.call_emulator(self.mock_env, '+123456789')
+
   @mock.patch.object(adb_utils, 'get_call_state', autospec=True)
   def test_end_call_if_active(self, mock_get_call_state):
     mock_get_call_state.return_value = 'OFFHOOK'
@@ -279,6 +285,100 @@ class TestScreenUtils(absltest.TestCase):
     self.assertIn(
         'Screen size information not found in adb response',
         str(context.exception),
+    )
+
+
+class LaunchAppFallbackTest(AdbTestSetup):
+  """Covers `_resolve_fallback_activity` + `launch_app` fallback path.
+
+  The `files` app has Google / AOSP alternatives (see
+  `adb_utils._FALLBACK_ACTIVITIES`). `launch_app` must pick whichever package
+  is actually installed on the device so that redroid (AOSP documentsui) and
+  Google-signed images both work with the same task code.
+  """
+
+  def setUp(self):
+    super().setUp()
+    self.mock_get_all_package_names = mock.patch.object(
+        adb_utils, 'get_all_package_names', autospec=True
+    ).start()
+    self.mock_start_activity = mock.patch.object(
+        adb_utils, 'start_activity', autospec=True
+    ).start()
+
+  def test_files_prefers_google_nbu_when_installed(self):
+    self.mock_get_all_package_names.return_value = [
+        'com.google.android.apps.nbu.files',
+        'com.android.documentsui',
+    ]
+    adb_utils.launch_app('files', self.mock_env)
+    self.mock_start_activity.assert_called_once()
+    called_activity = self.mock_start_activity.call_args.args[0]
+    self.assertTrue(
+        called_activity.startswith('com.google.android.apps.nbu.files/'),
+        f'Expected NBU Files but got {called_activity!r}',
+    )
+
+  def test_files_falls_back_to_google_documentsui(self):
+    self.mock_get_all_package_names.return_value = [
+        'com.google.android.documentsui',
+        'com.android.documentsui',
+    ]
+    adb_utils.launch_app('files', self.mock_env)
+    called_activity = self.mock_start_activity.call_args.args[0]
+    self.assertTrue(
+        called_activity.startswith('com.google.android.documentsui/'),
+        f'Expected Google DocumentsUI but got {called_activity!r}',
+    )
+
+  def test_files_falls_back_to_aosp_documentsui_on_redroid(self):
+    # Redroid / AOSP: neither Google Files package is installed.
+    self.mock_get_all_package_names.return_value = [
+        'com.android.documentsui',
+        'com.android.settings',
+    ]
+    adb_utils.launch_app('files', self.mock_env)
+    called_activity = self.mock_start_activity.call_args.args[0]
+    self.assertEqual(
+        called_activity,
+        'com.android.documentsui/com.android.documentsui.files.FilesActivity',
+    )
+
+  def test_files_without_any_candidate_uses_default_activity(self):
+    # Pathological case: device is missing *all* listed candidates. We
+    # should still issue a launch request, falling through to the default
+    # activity from _PATTERN_TO_ACTIVITY so the user gets a clear error
+    # from Android rather than a silent no-op.
+    self.mock_get_all_package_names.return_value = ['com.android.settings']
+    adb_utils.launch_app('files', self.mock_env)
+    called_activity = self.mock_start_activity.call_args.args[0]
+    self.assertEqual(
+        called_activity,
+        'com.google.android.documentsui/com.android.documentsui.files.FilesActivity',
+    )
+
+  def test_package_listing_failure_falls_back_to_default(self):
+    # If `pm list packages` throws for any reason, we must not crash
+    # `launch_app` — degrade to the default activity from
+    # _PATTERN_TO_ACTIVITY. This mirrors the behaviour before the fallback
+    # was introduced.
+    self.mock_get_all_package_names.side_effect = RuntimeError('adb down')
+    adb_utils.launch_app('files', self.mock_env)
+    called_activity = self.mock_start_activity.call_args.args[0]
+    self.assertEqual(
+        called_activity,
+        'com.google.android.documentsui/com.android.documentsui.files.FilesActivity',
+    )
+
+  def test_apps_without_fallback_are_untouched(self):
+    # An app not listed in _FALLBACK_ACTIVITIES should never trigger a
+    # package listing call and should launch its default activity.
+    adb_utils.launch_app('markor', self.mock_env)
+    self.mock_get_all_package_names.assert_not_called()
+    called_activity = self.mock_start_activity.call_args.args[0]
+    self.assertEqual(
+        called_activity,
+        'net.gsantner.markor/net.gsantner.markor.activity.MainActivity',
     )
 
 

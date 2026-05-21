@@ -19,11 +19,13 @@ and manage task execution on AndroidWorld tasks.
 """
 
 import contextlib
+import os
 import typing
 from typing import Any
 
 from android_world import registry as aw_registry_module
 from android_world import suite_utils
+from android_world.env import android_world_controller
 from android_world.env import env_launcher
 from android_world.env import interface
 from android_world.env import json_action
@@ -39,14 +41,34 @@ class StateResponse(pydantic.BaseModel):
   ui_elements: list[Any]
 
 
+def _env_bool(name: str, default: bool) -> bool:
+  value = os.getenv(name)
+  if value is None:
+    return default
+  return value.lower() in {'1', 'true', 'yes', 'on'}
+
+
 @contextlib.asynccontextmanager
 async def lifespan(fast_api_app: fastapi.FastAPI):
   """Manages the lifecycle of the Android environment and task suite."""
+  a11y_method_name = os.getenv('ANDROID_WORLD_A11Y_METHOD', '')
+  a11y_method = (
+      android_world_controller.A11yMethod(a11y_method_name)
+      if a11y_method_name
+      else None
+  )
   fast_api_app.state.app_android_env = env_launcher.load_and_setup_env(
-      console_port=5554,
-      emulator_setup=True,
-      freeze_datetime=True,
-      adb_path="/opt/android/platform-tools/adb",
+      console_port=int(os.getenv('ANDROID_WORLD_CONSOLE_PORT', '5554')),
+      emulator_setup=_env_bool('ANDROID_WORLD_EMULATOR_SETUP', True),
+      freeze_datetime=_env_bool('ANDROID_WORLD_FREEZE_DATETIME', True),
+      adb_path=os.getenv('ANDROID_WORLD_ADB_PATH', '/opt/android/platform-tools/adb'),
+      grpc_port=int(os.getenv('ANDROID_WORLD_GRPC_PORT', '8554')),
+      device_mode=os.getenv(
+          'ANDROID_WORLD_DEVICE_MODE',
+          env_launcher.DeviceMode.EMULATOR.value,
+      ),
+      adb_device_name=os.getenv('ANDROID_WORLD_ADB_DEVICE_NAME') or None,
+      a11y_method=a11y_method,
   )
   task_registry = aw_registry_module.TaskRegistry()
   aw_registry = task_registry.get_registry(task_registry.ANDROID_WORLD_FAMILY)

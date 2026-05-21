@@ -36,6 +36,7 @@ from android_world.agents import m3a
 from android_world.agents import random_agent
 from android_world.agents import seeact
 from android_world.agents import t3a
+from android_world.env import android_world_controller
 from android_world.env import env_launcher
 from android_world.env import interface
 
@@ -43,6 +44,29 @@ logging.set_verbosity(logging.WARNING)
 
 os.environ['GRPC_VERBOSITY'] = 'ERROR'  # Only show errors
 os.environ['GRPC_TRACE'] = 'none'  # Disable tracing
+
+
+def _load_local_env() -> None:
+  """Loads KEY=VALUE lines from ./.env.local if present."""
+  path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env.local')
+  if not os.path.isfile(path):
+    return
+  try:
+    with open(path, 'r', encoding='utf-8') as f:
+      for raw in f:
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+          continue
+        key, _, value = line.partition('=')
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+          os.environ[key] = value
+  except OSError:
+    pass
+
+
+_load_local_env()
 
 
 def _find_adb_directory() -> str:
@@ -80,6 +104,31 @@ _DEVICE_CONSOLE_PORT = flags.DEFINE_integer(
     ' retrieved by looking at the output of `adb devices`. In general, the'
     ' first connected device is port 5554, the second is 5556, and'
     ' so on.',
+)
+_DEVICE_MODE = flags.DEFINE_enum(
+    'device_mode',
+    env_launcher.DeviceMode.EMULATOR.value,
+    [mode.value for mode in env_launcher.DeviceMode],
+    'Which device backend to use.',
+)
+_ADB_DEVICE_NAME = flags.DEFINE_string(
+    'adb_device_name',
+    '',
+    'Explicit adb serial/endpoint. Required for redroid mode.',
+)
+_GRPC_PORT = flags.DEFINE_integer(
+    'grpc_port',
+    8554,
+    'The port for gRPC communication with the emulator backend.',
+)
+_A11Y_METHOD = flags.DEFINE_string(
+    'a11y_method',
+    '',
+    'Optional accessibility retrieval method override. Empty means "do not'
+    ' override" (the controller picks a sensible default per device_mode).'
+    ' Valid non-empty values: '
+    + '|'.join(m.value for m in android_world_controller.A11yMethod)
+    + '.',
 )
 
 _SUITE_FAMILY = flags.DEFINE_enum(
@@ -136,6 +185,12 @@ _FIXED_TASK_SEED = flags.DEFINE_boolean(
     'Whether to use the same task seed when running multiple task combinations'
     ' (n_task_combinations > 1).',
 )
+_MODEL_NAME = flags.DEFINE_string(
+    'model_name',
+    os.environ.get('OPENAI_MODEL_NAME', 'gpt-4-turbo-2024-04-09'),
+    'Model name passed to the LLM wrapper. Defaults to OPENAI_MODEL_NAME env'
+    ' var if set.',
+)
 
 
 # MiniWoB is very lightweight and new screens/View Hierarchy load quickly.
@@ -172,9 +227,9 @@ def _get_agent(
     )
   # GPT.
   elif _AGENT_NAME.value == 't3a_gpt4':
-    agent = t3a.T3A(env, infer.Gpt4Wrapper('gpt-4-turbo-2024-04-09'))
+    agent = t3a.T3A(env, infer.Gpt4Wrapper(_MODEL_NAME.value))
   elif _AGENT_NAME.value == 'm3a_gpt4v':
-    agent = m3a.M3A(env, infer.Gpt4Wrapper('gpt-4-turbo-2024-04-09'))
+    agent = m3a.M3A(env, infer.Gpt4Wrapper(_MODEL_NAME.value))
   # SeeAct.
   elif _AGENT_NAME.value == 'seeact':
     agent = seeact.SeeAct(env)
@@ -196,10 +251,19 @@ def _get_agent(
 
 def _main() -> None:
   """Runs eval suite and gets rewards back."""
+  a11y_method = (
+      android_world_controller.A11yMethod(_A11Y_METHOD.value)
+      if _A11Y_METHOD.value
+      else None
+  )
   env = env_launcher.load_and_setup_env(
       console_port=_DEVICE_CONSOLE_PORT.value,
       emulator_setup=_EMULATOR_SETUP.value,
       adb_path=_ADB_PATH.value,
+      grpc_port=_GRPC_PORT.value,
+      device_mode=_DEVICE_MODE.value,
+      adb_device_name=_ADB_DEVICE_NAME.value or None,
+      a11y_method=a11y_method,
   )
 
   n_task_combinations = _N_TASK_COMBINATIONS.value
