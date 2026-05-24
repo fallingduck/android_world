@@ -259,7 +259,7 @@ class AppiumController(
 
   @contextlib.contextmanager
   def _pull_file_ctx(self, remote_file_path: str):
-    """Context manager: pull a single file to a temp dir, yield it, clean up."""
+    """Context manager: pull a single file (+ WAL/SHM) to a temp dir."""
     import shutil  # pylint: disable=g-import-not-at-top
     tmp_dir = tempfile.mkdtemp(prefix='aw_pull_')
     try:
@@ -277,6 +277,19 @@ class AppiumController(
         ) from exc
       with open(local_path, 'wb') as fh:
         fh.write(data)
+
+      # Also pull WAL and SHM companion files for SQLite WAL-mode databases.
+      # Room (Android ORM) uses WAL by default; table DDL may reside in the
+      # WAL file until a checkpoint flushes it to the main DB file.
+      for suffix in ('-wal', '-shm'):
+        companion = remote_file_path + suffix
+        try:
+          companion_data = self._appium_env.pull_file(companion)
+          with open(os.path.join(tmp_dir, filename + suffix), 'wb') as fh:
+            fh.write(companion_data)
+        except Exception:  # pylint: disable=broad-except
+          pass  # Companion may not exist (journal mode or already checkpointed).
+
       yield tmp_dir
     finally:
       shutil.rmtree(tmp_dir, ignore_errors=True)
