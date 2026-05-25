@@ -267,6 +267,33 @@ In the current workflow, the agent tries to complete a task in a for loop. In ea
 
 Please see [the guide](https://github.com/google-research/android_world/blob/main/docs/tasks_guide.md) on adding new tasks to AndroidWorld.
 
+## FAQ
+
+**Q: Sandbox connection timeout?**
+Check that `E2B_DOMAIN` is correct and that the sandbox is in running state. You can verify with `e2b sandbox list`.
+
+**Q: Model returns empty responses?**
+Verify that `OPENAI_BASE_URL` and `OPENAI_MODEL_NAME` are configured correctly. Test the endpoint independently with curl:
+```bash
+curl -s $OPENAI_BASE_URL/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"your-model","messages":[{"role":"user","content":"hi"}]}'
+```
+
+**Q: How to use Claude models?**
+AndroidWorld supports any OpenAI-compatible endpoint. Anthropic provides an OpenAI-compatible interface:
+```bash
+OPENAI_API_KEY=sk-ant-xxxxx
+OPENAI_BASE_URL=https://api.anthropic.com/v1
+OPENAI_MODEL_NAME=claude-sonnet-4-20250514
+```
+
+**Q: How to switch agents?**
+Use the `--agent_name` flag:
+- `t3a_gpt4` — Text-only three-phase agent (recommended)
+- `m3a_gpt4v` — Multimodal three-phase agent (uses screenshots)
+- `human_agent` — Manual operation mode
+
 ## Citation
 
 If you use our environment or data, please cite our paper:
