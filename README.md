@@ -8,7 +8,8 @@
 <a href="https://google-research.github.io/android_world/">Website</a> •
 <a href="https://arxiv.org/pdf/2405.14573">Paper</a> •
 <a href="https://google-research.github.io/android_world/task_list.html">Tasks</a> •
-<a href="https://docs.google.com/spreadsheets/d/1cchzP9dlTZ3WXQTfYNhh3avxoLipqHN75v1Tb86uhHo/edit?gid=0#gid=0">Leaderboard</a>
+<a href="https://docs.google.com/spreadsheets/d/1cchzP9dlTZ3WXQTfYNhh3avxoLipqHN75v1Tb86uhHo/edit?gid=0#gid=0">Leaderboard</a> •
+<a href="README_CN.md">中文文档</a>
 </p>
 
 ![Overview](assets/overview.png)
@@ -16,153 +17,105 @@
 **AndroidWorld** is an environment for building and benchmarking autonomous
 computer control agents.
 
-It runs on a live Android emulator and contains a highly reproducible benchmark
-of 116 hand-crafted tasks across 20 apps, which are dynamically instantiated
-with randomly-generated parameters to create millions of unique task variations.
+It runs on [TencentAGR](https://cloud.tencent.com/product/agr) cloud Android
+sandboxes and contains a highly reproducible benchmark of 116 hand-crafted tasks
+across 20 apps, which are dynamically instantiated with randomly-generated
+parameters to create millions of unique task variations.
 
 In addition to the built-in tasks, AndroidWorld also supports the popular web benchmark, MiniWoB++ from [Liu et al.](http://arxiv.org/abs/1802.08802).
 
 Key features of AndroidWorld include:
 
-* 📝 **116 diverse tasks** across 20 real-world apps
-* 🎲 **Dynamic task instantiation** for millions of unique variations
-* 🏆 **Durable reward signals** for reliable evaluation
-* 🐳 **Experimental Docker Support** for simplified setup and consistent environments (as of 06/02/2025)
-* 🌐 **Open environment** with access to millions of Android apps and websites
-* 💾 **Lightweight footprint** (2 GB memory, 8 GB disk)
-* 🔧 **Extensible design** to easily add new tasks and benchmarks
-* 🖥️ **Integration with MiniWoB++** web-based tasks
+* **116 diverse tasks** across 20 real-world apps
+* **Dynamic task instantiation** for millions of unique variations
+* **Durable reward signals** for reliable evaluation
+* **Cloud-native** — runs on AgentRuntime sandboxes, no local emulator needed
+* **Parallel evaluation** — distribute tasks across multiple sandboxes
+* **Open environment** with access to millions of Android apps and websites
+* **Lightweight footprint** (2 GB memory, 8 GB disk per sandbox)
+* **Extensible design** to easily add new tasks and benchmarks
+* **Integration with MiniWoB++** web-based tasks
 
 See demo videos on our [website](https://google-research.github.io/android_world/).
-o
 
 ## Installation
 
-1. Set up the Android Emulator
-   1. Download Android Studio [here](https://developer.android.com/studio?gad_source=1&gclid=Cj0KCQjw3ZayBhDRARIsAPWzx8oLcadBD0vAq8xmUutaunLGSzhgEtLz4xVZ_SpV4G0xJazS7LxQkDsaAuveEALw_wcB&gclsrc=aw.ds)
-   2. Create an Android Virtual Device (AVD) by following these instructions. For hardware select **Pixel 6**, for System Image select **Tiramisu, API Level 33**, and choose AVD name as **AndroidWorldAvd**. [Watch the setup video.](https://github.com/google-research/android_world/assets/162379927/efc33980-8b36-44be-bb2b-a92d4c334a50)
-
-1. Launch the Android Emulator from the command line
-
-    Launch the emulator from the command line, not using the Android Studio UI,
-    with the `-grpc 8554` flag which is needed communication with accessibility
-    forwarding app.
-
-    ```bash
-    # Typically it's located in ~/Android/Sdk/emulator/emulator or
-    # ~/Library/Android/sdk/emulator/emulator
-    EMULATOR_NAME=AndroidWorldAvd # From previous step
-    ~/Library/Android/sdk/emulator/emulator -avd $EMULATOR_NAME -no-snapshot -grpc 8554
-    ```
-
 1. [Optional] It's recommended to use `conda`, which you can download [here](https://docs.anaconda.com/free/miniconda/miniconda-install/).
 
-    ```
+    ```bash
     conda create -n android_world python=3.11.8
     conda activate android_world
     ```
 
-1. Install AndroidWorld. *Note: Python 3.11 or above is required.*
+2. Install AndroidWorld. *Note: Python 3.11 or above is required.*
 
-    ```python
+    ```bash
     git clone https://github.com/google-research/android_world.git
     cd ./android_world
     pip install -r requirements.txt
     python setup.py install
     ```
 
-1. Add model provider APIs as environment variables.
+3. Install `ffmpeg`, if not already installed.
 
     ```bash
-    # Add to .bashrc.
-    export OPENAI_API_KEY=your-key
-    export GCP_API_KEY=your-key
-    ```
-
-1. Install `ffmpeg`, if not already installed.
-
-    ```bash
-    # Linux (Ubuntu/Debian)
-    # sudo apt update && sudo apt install ffmpeg
-
     # macOS
     brew install ffmpeg
+
+    # Linux (Ubuntu/Debian)
+    # sudo apt update && sudo apt install ffmpeg
     ```
 
-## Quickstart
+## Configuration
 
-### Option A: Android Emulator (local)
+### Prerequisites
 
-Run the `minimal_task_runner.py` script to see the basic mechanics of
-AndroidWorld components. It initializes the environment, sets up a task, and
-runs the default agent on it.
+- A TencentAGR API key (`E2B_API_KEY`)
+- The AGR service domain for your region (e.g. `ap-guangzhou.tencentags.com`)
+- A pre-built sandbox template or pre-created sandbox IDs
+- An OpenAI-compatible LLM endpoint (OpenAI, Anthropic, Google, etc.)
+
+### 1. Configure environment
+
 ```bash
-python minimal_task_runner.py --task=ContactsAddContact
+cp .env.example .env          # fill in E2B_API_KEY, E2B_DOMAIN, OPENAI_API_KEY, …
+cp sandboxes_example.yaml sandboxes.yaml  # fill in your pre-created sandbox IDs
 ```
 
-If you don't specify a task, a random task will be selected. *NOTE: If you want
-to try open-source apps, i.e. not included with Android OS, please run
-`--perform_emulator_setup` in the script below.*
+The `.env` file supports all configuration. You can also create a `.env.local`
+file for local overrides that should not be committed to git.
 
-**Note on Model Cost:** The `minimal_task_runner.py` script uses a legacy model `gpt-4-turbo-2024-04-09` by default. This model can be expensive. For serious usage, you can switch to a more cost-effective model, by modifying the `model_name` in the script.
+**Priority order:** OS environment > `.env.local` > `.env` > flag defaults
 
-## Redroid support
+### 2. Configure the LLM model
 
-This repository also includes an experimental `redroid` backend that can talk
-to a container over ADB without relying on Android Emulator console ports.
-See `docs/redroid_runbook.md` for setup, runtime flags, supported task classes,
-and current limitations.
+Set the model endpoint in `.env` (or export in shell):
 
-### Option B: AgentRuntime cloud sandbox
+```bash
+# OpenAI
+OPENAI_API_KEY=sk-xxxxx
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL_NAME=gpt-4o
 
-AndroidWorld supports [TencentAGR](https://cloud.tencent.com/product/agr) cloud
-Android sandboxes as a drop-in replacement for the local emulator.  No Android
-Studio setup is required.
+# Anthropic Claude (via OpenAI-compatible endpoint)
+OPENAI_API_KEY=sk-ant-xxxxx
+OPENAI_BASE_URL=https://api.anthropic.com/v1
+OPENAI_MODEL_NAME=claude-sonnet-4-20250514
 
-1. Copy and fill in the configuration files:
+# Google Gemini (via OpenAI-compatible endpoint)
+OPENAI_API_KEY=your-gemini-key
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+OPENAI_MODEL_NAME=gemini-2.5-pro
+```
 
-    ```bash
-    cp .env.example .env          # fill in E2B_API_KEY, E2B_DOMAIN, OPENAI_API_KEY, …
-    cp sandboxes_example.yaml sandboxes.yaml  # fill in your pre-created sandbox IDs
-    ```
+The `OPENAI_BASE_URL` handling is smart: if it ends with `/v1`,
+`/chat/completions` is appended automatically. If it already contains the full
+path, it is used as-is.
 
-2. Smoke-test a single task:
+### 3. Configure sandbox pool
 
-    ```bash
-    python minimal_task_runner.py \
-      --task=ContactsAddContact \
-      --device_mode=agentruntime \
-      --sandboxes_yaml=sandboxes.yaml
-    ```
-
-3. Run the full benchmark in parallel:
-
-    ```bash
-    python run.py \
-      --suite_family=android_world \
-      --agent_name=t3a_gpt4 \
-      --sandboxes_yaml=sandboxes.yaml
-    ```
-    When `--sandboxes_yaml` is provided, `execution_mode` is automatically set
-    to `parallel` and `sandbox_count` is derived from the number of sandbox IDs
-    listed in the file.
-
-**Key environment variables** (set in `.env` or exported in the shell):
-
-| Variable | Description |
-|---|---|
-| `E2B_API_KEY` | AGR API key |
-| `E2B_DOMAIN` | AGR service domain, e.g. `ap-chongqing.tencentags.com` |
-| `SANDBOX_TEMPLATE` | Template name when creating new sandboxes |
-| `SANDBOXES_YAML` | Path to a `sandboxes.yaml` file (alternative to `--sandboxes_yaml` flag) |
-| `OPENAI_API_KEY` | OpenAI-compatible API key |
-| `OPENAI_BASE_URL` | Custom base URL, e.g. `https://api.agrun.woa.com/v1` |
-| `OPENAI_MODEL_NAME` | Model name, e.g. `venus/gpt-4o` |
-
-## AgentRuntime sandbox pool
-
-For large-scale parallel evaluation, pre-create a pool of AGR sandboxes and
-list their IDs in `sandboxes.yaml`:
+For parallel evaluation, pre-create a pool of AGR sandboxes and list their IDs
+in `sandboxes.yaml`:
 
 ```yaml
 # sandboxes.yaml
@@ -173,77 +126,123 @@ sandbox_ids:
 ```
 
 Pass `--sandboxes_yaml=sandboxes.yaml` to either `minimal_task_runner.py` or
-`run.py`.  The runner connects to those sandboxes (instead of creating new
-ones) and distributes tasks across them automatically.
+`run.py`. The runner connects to those sandboxes (instead of creating new ones)
+and distributes tasks across them automatically.
 
-## Docker Support (Experimental)
+For instructions on how to pre-create sandboxes, manage sandbox lifecycle, or
+extend AndroidWorld with custom mobile automation workflows, refer to the
+[mobile-use examples](https://github.com/TencentCloudAgentRuntime/ags-cookbook/tree/main/examples/mobile-use)
+in the AGS Cookbook.
 
-AndroidWorld now offers Docker support. This allows you to run the Android
-environment and server within a Docker container, which can simplify setup and
-ensure a consistent environment.
+## Quickstart
 
-**Note:** This feature is experimental and has not been extensively tested.
+### Smoke-test a single task (serial mode)
 
-1.  **Build the Docker image:**
-
-    Navigate to the root directory of the `android_world` repository and run:
-    ```bash
-    docker build -t android_world:latest .
-    ```
-
-2.  **Run the Docker container:**
-    ```bash
-    docker run --privileged -p 5000:5000 -it android_world:latest
-    ```
-    This will start the Android emulator and the FastAPI server inside the
-    container. The server will be accessible on `http://localhost:5000`.
-
-3.  **Interact with the environment:**
-    You can see the `scripts/run_suite_on_docker.py` script as an example client
-    to interact with the Android environment server running in Docker.
-
-### Note for Apple Silicon users
-
-There are known [issues](https://github.com/amrsa1/Android-Emulator-image/issues/10) with installing the required package `emulator` on ARM chips (Apple Silicon). To get around this, if building images locally, you should build images for the AMD64/x86_64 instruction set, by running:
 ```bash
-docker buildx build --platform linux/amd64 -t android-emulator:latest .
+python minimal_task_runner.py \
+  --task=TasksDueOnDate \
+  --device_mode=agentruntime \
+  --sandboxes_yaml=sandboxes.yaml
 ```
 
-Note, running in a Docker container like this, on an Apple Silicon device will run quite slowly compared to running the Android
-Device and Emulator natively (because you end up running an Android Emulator inside a Linux Emulator...).
-
-## Run the benchmark
-
-Note: **Task Step Limits Update**
-As of 11/18/2024, the max_steps/step_budget for each task in AndroidWorld have been updated to approximately **2x the human average completion time**. This adjustment ensures agents have sufficient time to complete tasks, while also reducing overhead of running thebenchmark. [Here](https://docs.google.com/spreadsheets/d/1KF-vY0Uy47o0mnursvs-HmS6hreU6U3rPrAjgEfjMK4/edit?usp=sharing) are the per-task updates.
+### Run the full benchmark in parallel
 
 ```bash
 python run.py \
   --suite_family=android_world \
   --agent_name=t3a_gpt4 \
-  --perform_emulator_setup \
-  --tasks=ContactsAddContact,ClockStopWatchRunning \  # Optional: Just run on a subset.
+  --device_mode=agentruntime \
+  --sandboxes_yaml=sandboxes.yaml
 ```
 
-The first time you run this script, you must install the necessary apps and set
-permissions by specifying `--perform_emulator_setup`. This is a one-time setup.
-It may take several minutes depending on the connection speed.
+When `--sandboxes_yaml` is provided, `execution_mode` is automatically set
+to `parallel` and `sandbox_count` is derived from the number of sandbox IDs
+listed in the file.
 
-Above we specify the optional `--tasks` flag to run on a subset of tasks. Leave
-it empty to run on the entire AndroidWorld suite.
+### Run a subset of tasks
+
+```bash
+python run.py \
+  --suite_family=android_world \
+  --agent_name=t3a_gpt4 \
+  --device_mode=agentruntime \
+  --sandboxes_yaml=sandboxes.yaml \
+  --tasks=ContactsAddContact,SimpleSmsSend,MarkorCreateNote
+```
+
+## Execution modes
+
+| Mode | When | Description |
+|------|------|-------------|
+| **serial** | Default, or `--execution_mode=serial` | One sandbox, tasks run sequentially |
+| **parallel** | Auto when `--sandboxes_yaml` is provided | Multiple sandboxes, tasks distributed across them |
+
+In parallel mode, the runner creates a `SandboxPool`, distributes task instances
+across sandboxes, and collects results. Each sandbox runs its own agent instance.
+
+## Environment variables reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `E2B_API_KEY` | Yes | — | AGR API key |
+| `E2B_DOMAIN` | Yes | — | AGR service domain (e.g. `ap-guangzhou.tencentags.com`) |
+| `SANDBOX_TEMPLATE` | Conditional | — | Template name for creating new sandboxes (not needed if using `sandboxes.yaml`) |
+| `SANDBOX_TIMEOUT` | No | `300` | Sandbox lifetime in seconds |
+| `SANDBOX_COUNT` | No | `1` | Number of sandboxes (auto-derived when using `sandboxes.yaml`) |
+| `EXECUTION_MODE` | No | `serial` | `serial` or `parallel` |
+| `THREAD_POOL_SIZE` | No | `4` | Worker threads per process |
+| `PROCESS_COUNT` | No | `1` | Number of processes |
+| `OPENAI_API_KEY` | Yes | — | OpenAI-compatible API key |
+| `OPENAI_BASE_URL` | No | `https://api.openai.com/v1` | Custom LLM endpoint |
+| `OPENAI_MODEL_NAME` | No | `gpt-4-turbo-2024-04-09` | Model identifier |
+
+## Output structure
+
+After a run completes, results are saved to the output directory:
+
+```
+output/runs/<run-id>/
+├── summary.json        # Aggregate stats (success rate, sandbox count, etc.)
+├── details.json        # Per-task results (task_name, is_successful, duration, etc.)
+└── <sandbox-id>/       # Per-sandbox logs and screenshots
+```
+
+## Resume from checkpoint
+
+If a run fails part-way through, resume it:
+
+```bash
+python run.py \
+  --suite_family=android_world \
+  --agent_name=t3a_gpt4 \
+  --device_mode=agentruntime \
+  --sandboxes_yaml=sandboxes.yaml \
+  --checkpoint_dir=output/runs/<previous-run-id>
+```
+
+## Task step limits
+
+As of 11/18/2024, the max_steps/step_budget for each task have been updated to
+approximately **2x the human average completion time**. This ensures agents have
+sufficient time to complete tasks while reducing benchmark overhead.
+[Per-task updates](https://docs.google.com/spreadsheets/d/1KF-vY0Uy47o0mnursvs-HmS6hreU6U3rPrAjgEfjMK4/edit?usp=sharing).
 
 The `n_task_combinations` argument specifies how many parameter permutations to
 use for each task. For example, for an SMS task, it would correspond to
 different phone number/message combinations for each run.
 
-If a run fails part-way through, you can resume it by re-running the script with
-the `--checkpoint_dir` flag pointing to the output directory from the original
-run.
-
 ## Running MiniWoB++ tasks
 
-To run the MiniWoB++ web-based tasks in AndroidWorld, simply set
-`--suite_family=miniwob` and `--perform_emulator_setup` in the command above.
+To run the MiniWoB++ web-based tasks in AndroidWorld, set
+`--suite_family=miniwob`:
+
+```bash
+python run.py \
+  --suite_family=miniwob \
+  --agent_name=t3a_gpt4 \
+  --device_mode=agentruntime \
+  --sandboxes_yaml=sandboxes.yaml
+```
 
 A key advantage of running MiniWoB++ tasks is that common input elements are
 rendered as native, commonly used Android UI widgets, rather than as HTML. Thus
