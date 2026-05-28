@@ -342,6 +342,9 @@ class Gpt4Wrapper(LlmWrapper, MultimodalLlmWrapper):
     # also auto-recover at runtime (see retry loop below).
     def _uses_max_completion_tokens(m: str) -> bool:
       m = (m or '').lower()
+      # Strip common vendor prefixes (e.g. "venus/gpt-5.5" -> "gpt-5.5")
+      if '/' in m:
+        m = m.rsplit('/', 1)[-1]
       return (
           m.startswith('gpt-5')
           or m.startswith('gpt-6')
