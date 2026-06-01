@@ -328,14 +328,29 @@ class AppiumController(
     self._appium_env.push_file(local_db_file_path, remote_db_file_path)
 
   # -------------------------------------------------------------------------
-  # Reconnect (no-op for Appium — sessions don't auto-disconnect)
+  # Reconnect (session recovery after InvalidSessionIdException)
   # -------------------------------------------------------------------------
 
-  def refresh_env(self) -> None:  # pylint: disable=useless-return
-    """No-op for Appium sessions (included for API compatibility)."""
-    logging.info(
-        'AppiumController.refresh_env called — no-op for Appium backend.'
+  def refresh_env(self) -> None:
+    """Reconnect the Appium driver after session death.
+
+    Creates a new WebDriver session using the same sandbox metadata.  If
+    reconnection fails, raises ``RuntimeError`` so the caller can decide
+    whether to abort or retry.
+
+    Raises:
+      RuntimeError: If the driver could not be re-established.
+    """
+    logging.warning(
+        'AppiumController.refresh_env: reconnecting (sandbox=%s).',
+        self._session.sandbox_id,
     )
+    success = self._appium_env.reconnect_driver(self._session)
+    if not success:
+      raise RuntimeError(
+          f'AppiumController.refresh_env failed for sandbox '
+          f'{self._session.sandbox_id}'
+      )
 
   # -------------------------------------------------------------------------
   # A11y tree (not available in Appium-only mode)

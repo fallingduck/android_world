@@ -241,13 +241,21 @@ class ParallelRunner:
     episode_length = 0
     error_msg = None
     is_successful = 0.0
+    max_reconnects = getattr(self._cfg, 'appium_reconnect_retries', 2)
+    reconnect_count = 0
 
     try:
-      # Reset env to home screen.
-      env.reset(go_home=True)
+      # Reset env to home screen (with reconnection support).
+      self._call_with_reconnect(
+          lambda: env.reset(go_home=True),
+          handle, max_reconnects, 'reset',
+      )
 
       # Initialize the task.
-      inst.task.initialize_task(env)
+      self._call_with_reconnect(
+          lambda: inst.task.initialize_task(env),
+          handle, max_reconnects, 'initialize_task',
+      )
 
       writer.write_console(f'[START] {inst.task_name} seed={inst.seed}\n')
       writer.write_console(f'Goal: {inst.task.goal}\n')
@@ -256,7 +264,37 @@ class ParallelRunner:
       max_steps = int(inst.task.complexity * 10)
       is_done = False
       for step in range(max_steps):
-        response = agent.step(inst.task.goal)
+        try:
+          response = agent.step(inst.task.goal)
+        except Exception as step_exc:
+          if self._is_session_dead(step_exc) and reconnect_count < max_reconnects:
+            reconnect_count += 1
+            logging.warning(
+                'ParallelRunner: session death in agent.step() '
+                '(task=%s, step=%d, attempt=%d/%d). Reconnecting…',
+                inst.task_name,
+                step,
+                reconnect_count,
+                max_reconnects,
+            )
+            writer.write_console(
+                f'[RECONNECT] Session died at step {step+1}, '
+                f'attempt {reconnect_count}/{max_reconnects}\n'
+            )
+            handle.controller.refresh_env()
+            agent = self._agent_factory(env)
+            # Retry this step.
+            try:
+              response = agent.step(inst.task.goal)
+            except Exception as retry_exc:
+              if self._is_session_dead(retry_exc):
+                raise RuntimeError(
+                    f'Session still dead after reconnection: {retry_exc}'
+                ) from retry_exc
+              raise
+          else:
+            raise
+
         episode_length = step + 1
         # Save per-step screenshots if available (e.g. M3A agent).
         if response.data:
@@ -269,8 +307,11 @@ class ParallelRunner:
           is_done = True
           break
 
-      # Evaluate success.
-      is_successful = inst.task.is_successful(env)
+      # Evaluate success (with reconnection support).
+      is_successful = self._call_with_reconnect(
+          lambda: inst.task.is_successful(env),
+          handle, max_reconnects, 'is_successful',
+      )
       writer.write_console(
           f'[END] success={is_successful}, steps={episode_length}\n'
       )
@@ -328,6 +369,54 @@ class ParallelRunner:
         self._save_checkpoint(result)
 
     return result
+
+  # -------------------------------------------------------------------------
+  # Session death detection & reconnection helpers
+  # -------------------------------------------------------------------------
+
+  @staticmethod
+  def _is_session_dead(exc: Exception) -> bool:
+    """Return True if ``exc`` indicates the Appium session has died."""
+    exc_str = str(exc).lower()
+    exc_type = type(exc).__name__
+    return (
+        'InvalidSessionIdException' in exc_type
+        or 'NoSuchDriverError' in exc_type
+        or 'session is either terminated or not started' in exc_str
+        or 'invalid session id' in exc_str
+        or 'invalid session' in exc_str
+    )
+
+  def _call_with_reconnect(self, fn, handle, max_retries: int, label: str):
+    """Call ``fn()`` and retry once with reconnection on session death.
+
+    Args:
+      fn: Zero-arg callable to execute.
+      handle: The ``SandboxHandle`` (for calling ``refresh_env``).
+      max_retries: Maximum reconnection attempts.
+      label: Description for log messages (e.g. 'reset', 'is_successful').
+
+    Returns:
+      The return value of ``fn()``.
+
+    Raises:
+      RuntimeError: If reconnection fails or retries are exhausted.
+      Other exceptions: Non-session errors propagate unchanged.
+    """
+    try:
+      return fn()
+    except Exception as exc:
+      if not self._is_session_dead(exc) or max_retries <= 0:
+        raise
+      logging.warning(
+          'ParallelRunner: session death during %s (sandbox=%s). '
+          'Attempting reconnection…',
+          label,
+          handle.sandbox_id,
+      )
+      handle.controller.refresh_env()
+      # Retry once after successful reconnection.
+      return fn()
 
   def _save_checkpoint(self, result: EpisodeResult) -> None:
     """Write one result to the checkpointer (thread-safe).

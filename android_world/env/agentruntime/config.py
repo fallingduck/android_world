@@ -113,6 +113,10 @@ class AgentRuntimeConfig:
   # Appium-specific timeouts
   appium_shell_timeout: int = 30
 
+  # Session reconnection
+  appium_reconnect_retries: int = 2
+  """Max reconnection attempts per task when InvalidSessionIdException occurs."""
+
   # Concurrency / execution
   execution_mode: ExecutionMode = 'serial'
   sandbox_count: int = 1

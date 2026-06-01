@@ -353,10 +353,27 @@ class Gpt4Wrapper(LlmWrapper, MultimodalLlmWrapper):
           or m.startswith('o4')
       )
 
+    def _rejects_temperature(m: str) -> bool:
+      """Models that do not accept a custom temperature parameter."""
+      m = (m or '').lower()
+      if '/' in m:
+        m = m.rsplit('/', 1)[-1]
+      return (
+          m.startswith('claude-opus')
+          or m.startswith('claude-sonnet')
+          or m.startswith('claude-haiku')
+          or m.startswith('claude-4')
+          or m.startswith('claude-3')
+      )
+
     if _uses_max_completion_tokens(self.model):
       payload['max_completion_tokens'] = payload.pop('max_tokens')
       # gpt-5 / o-series do not support custom temperature; only the default
       # value is accepted. Drop it to avoid 400 errors.
+      payload.pop('temperature', None)
+
+    if _rejects_temperature(self.model):
+      # Claude models served via venus/ proxy reject the temperature param.
       payload.pop('temperature', None)
 
     counter = self.max_retry
@@ -390,7 +407,7 @@ class Gpt4Wrapper(LlmWrapper, MultimodalLlmWrapper):
             and 'max_tokens' in payload:
           payload['max_completion_tokens'] = payload.pop('max_tokens')
           retried = True
-        if "'temperature'" in err_msg and 'temperature' in payload:
+        if ('temperature' in err_msg.lower()) and 'temperature' in payload:
           payload.pop('temperature', None)
           retried = True
         if retried:
