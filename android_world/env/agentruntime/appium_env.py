@@ -321,6 +321,58 @@ class AppiumEnv:
     """Expose the raw Appium WebDriver (use sparingly)."""
     return self._driver
 
+  def reconnect_driver(self, session) -> bool:
+    """Recreate the Appium WebDriver using existing session metadata.
+
+    This is used to recover from ``InvalidSessionIdException`` when the
+    Appium server has killed or lost the session (e.g. due to inactivity
+    timeout or server restart).  The sandbox itself is still alive — only
+    the WebDriver session needs to be re-established.
+
+    Args:
+      session: A ``SandboxSession`` containing ``appium_url``,
+        ``access_token``, and ``sandbox_id`` needed to create a new driver.
+
+    Returns:
+      True if reconnection succeeded, False otherwise.
+    """
+    from android_world.env.agentruntime import appium_connection  # pylint: disable=g-import-not-at-top
+
+    logging.warning(
+        'AppiumEnv.reconnect_driver: attempting to recreate driver '
+        '(sandbox=%s).',
+        self._sandbox_id,
+    )
+    try:
+      new_driver = appium_connection.create_appium_driver(
+          session,
+          new_command_timeout=max(self._shell_timeout * 10, 300),
+      )
+    except Exception as exc:  # pylint: disable=broad-except
+      logging.error(
+          'AppiumEnv.reconnect_driver: failed to create new driver '
+          '(sandbox=%s): %s',
+          self._sandbox_id,
+          exc,
+      )
+      return False
+
+    # Best-effort cleanup of the old (dead) driver.
+    old_driver = self._driver
+    try:
+      old_driver.quit()
+    except Exception:  # pylint: disable=broad-except
+      pass
+
+    # Swap in the new driver.
+    self._driver = new_driver
+    logging.info(
+        'AppiumEnv.reconnect_driver: success (sandbox=%s, new_session=%s).',
+        self._sandbox_id,
+        new_driver.session_id,
+    )
+    return True
+
   def quit(self) -> None:
     """Quit the Appium WebDriver session (does NOT kill the sandbox)."""
     try:
