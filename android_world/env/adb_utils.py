@@ -1611,11 +1611,12 @@ def enable_mock_location_permission(
     env: env_interface.AndroidEnvInterface,
     timeout_sec: float = _DEFAULT_TIMEOUT_SECS,
 ) -> adb_pb2.AdbResponse:
-  """Grants MOCK_LOCATION appop to com.android.shell.
+  """Grants MOCK_LOCATION appop for shell-oriented and root-oriented paths.
 
-  This follows the validated fix path for Android 14+ where shell-driven
-  `cmd location providers ...` requires `MOCK_LOCATION` on package
-  `com.android.shell`.
+  Different backends may execute `mobile: shell` as different identities
+  (`uid=2000 shell` vs `uid=0 root`). To support both, attempt to grant
+  MOCK_LOCATION to both identities and treat the operation as successful if
+  at least one grant succeeds.
 
   Args:
     env: The Android environment interface.
@@ -1624,7 +1625,7 @@ def enable_mock_location_permission(
   Returns:
     A response object containing the ADB operation result.
   """
-  return issue_generic_request(
+  grant_commands = [
       [
           'shell',
           'appops',
@@ -1633,8 +1634,35 @@ def enable_mock_location_permission(
           'android:mock_location',
           'allow',
       ],
-      env,
-      timeout_sec,
+      [
+          'shell',
+          'appops',
+          'set',
+          '--uid',
+          '0',
+          'android:mock_location',
+          'allow',
+      ],
+  ]
+
+  successful_response: Optional[adb_pb2.AdbResponse] = None
+  last_error_response: Optional[adb_pb2.AdbResponse] = None
+  for command in grant_commands:
+    response = issue_generic_request(command, env, timeout_sec)
+    if response.status == adb_pb2.AdbResponse.Status.OK:
+      successful_response = successful_response or response
+    else:
+      last_error_response = response
+      logging.warning(
+          'Failed to grant MOCK_LOCATION with command: %s', ' '.join(command)
+      )
+
+  if successful_response is not None:
+    return successful_response
+
+  return last_error_response or adb_pb2.AdbResponse(
+      status=adb_pb2.AdbResponse.Status.INTERNAL_ERROR,
+      error_message='Failed to grant MOCK_LOCATION appop for all identities.',
   )
 
 

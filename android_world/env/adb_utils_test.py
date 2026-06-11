@@ -125,25 +125,66 @@ Phone Id=0
 
 class MockLocationUtilsTest(AdbTestSetup):
 
-  def test_enable_mock_location_permission(self):
-    mock_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
-    self.mock_issue_generic_request.return_value = mock_response
+  def test_enable_mock_location_permission_grants_shell_and_uid0(self):
+    shell_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    uid0_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    self.mock_issue_generic_request.side_effect = [shell_response, uid0_response]
 
     result = adb_utils.enable_mock_location_permission(self.mock_env)
 
-    self.assertIs(result, mock_response)
-    self.mock_issue_generic_request.assert_called_once_with(
-        [
-            'shell',
-            'appops',
-            'set',
-            'com.android.shell',
-            'android:mock_location',
-            'allow',
-        ],
-        self.mock_env,
-        adb_utils._DEFAULT_TIMEOUT_SECS,
+    self.assertIs(result, shell_response)
+    self.assertEqual(self.mock_issue_generic_request.call_count, 2)
+    self.mock_issue_generic_request.assert_has_calls([
+        mock.call(
+            [
+                'shell',
+                'appops',
+                'set',
+                'com.android.shell',
+                'android:mock_location',
+                'allow',
+            ],
+            self.mock_env,
+            adb_utils._DEFAULT_TIMEOUT_SECS,
+        ),
+        mock.call(
+            [
+                'shell',
+                'appops',
+                'set',
+                '--uid',
+                '0',
+                'android:mock_location',
+                'allow',
+            ],
+            self.mock_env,
+            adb_utils._DEFAULT_TIMEOUT_SECS,
+        ),
+    ])
+
+  def test_enable_mock_location_permission_succeeds_when_uid0_only_works(self):
+    shell_response = adb_pb2.AdbResponse(
+        status=adb_pb2.AdbResponse.Status.INTERNAL_ERROR
     )
+    uid0_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    self.mock_issue_generic_request.side_effect = [shell_response, uid0_response]
+
+    result = adb_utils.enable_mock_location_permission(self.mock_env)
+
+    self.assertEqual(result.status, adb_pb2.AdbResponse.Status.OK)
+
+  def test_enable_mock_location_permission_fails_when_all_grants_fail(self):
+    shell_response = adb_pb2.AdbResponse(
+        status=adb_pb2.AdbResponse.Status.INTERNAL_ERROR
+    )
+    uid0_response = adb_pb2.AdbResponse(
+        status=adb_pb2.AdbResponse.Status.INTERNAL_ERROR
+    )
+    self.mock_issue_generic_request.side_effect = [shell_response, uid0_response]
+
+    result = adb_utils.enable_mock_location_permission(self.mock_env)
+
+    self.assertEqual(result.status, adb_pb2.AdbResponse.Status.INTERNAL_ERROR)
 
   def test_setup_test_location_provider_happy_path(self):
     remove_response = adb_pb2.AdbResponse(
