@@ -423,6 +423,33 @@ class OsmAndTrack(_OsmTaskEval):
         self.params['waypoints']
     )
 
+    permission_response = adb_utils.enable_mock_location_permission(
+        env.controller
+    )
+    adb_utils.check_ok(
+        permission_response,
+        (
+            'Failed to grant MOCK_LOCATION appop to com.android.shell before'
+            ' OsmAndTrack.'
+        ),
+    )
+
+    provider_response = adb_utils.setup_test_location_provider(env.controller)
+    adb_utils.check_ok(
+        provider_response,
+        'Failed to create and enable test location provider before OsmAndTrack.',
+    )
+
+    if self._target_waypoint_coords:
+      latitude, longitude = self._target_waypoint_coords[0]
+      location_response = adb_utils.set_test_location(
+          latitude, longitude, env.controller
+      )
+      adb_utils.check_ok(
+          location_response,
+          'Failed to inject initial waypoint location before OsmAndTrack.',
+      )
+
   def is_successful(self, env: interface.AsyncEnv) -> float:
     with file_utils.tmp_directory_from_device(
         file_utils.convert_to_posix_path(_DEVICE_FILES, 'tracks'),
@@ -445,6 +472,13 @@ class OsmAndTrack(_OsmTaskEval):
   def tear_down(self, env: interface.AsyncEnv):
     """Cleans up after task completion."""
     _clear_tracks(env.controller)
+    provider_cleanup_response = adb_utils.remove_test_location_provider(
+        env.controller
+    )
+    if provider_cleanup_response.status != adb_pb2.AdbResponse.Status.OK:
+      logging.warning(
+          'Failed to remove test location provider during OsmAndTrack teardown.'
+      )
     super().tear_down(env)
 
   @classmethod

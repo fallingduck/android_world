@@ -238,6 +238,9 @@ _DEFAULT_URIS: dict[str, str] = {
     'gallery': 'content://media/external/images/media/',
 }
 
+# Default test location provider name used by location-injection helpers.
+_AW_TEST_LOCATION_PROVIDER = 'aw_gps'
+
 
 def check_ok(response: adb_pb2.AdbResponse, message=None) -> None:
   """Check an ADB response and raise RuntimeError if not OK.
@@ -1602,6 +1605,172 @@ def call_emulator(
   adb_args = ['emu', 'gsm', 'call', f'{escaped_phone_number}']
   response = issue_generic_request(adb_args, env, timeout_sec)
   return response
+
+
+def enable_mock_location_permission(
+    env: env_interface.AndroidEnvInterface,
+    timeout_sec: float = _DEFAULT_TIMEOUT_SECS,
+) -> adb_pb2.AdbResponse:
+  """Grants MOCK_LOCATION appop to com.android.shell.
+
+  This follows the validated fix path for Android 14+ where shell-driven
+  `cmd location providers ...` requires `MOCK_LOCATION` on package
+  `com.android.shell`.
+
+  Args:
+    env: The Android environment interface.
+    timeout_sec: A timeout for the ADB operation.
+
+  Returns:
+    A response object containing the ADB operation result.
+  """
+  return issue_generic_request(
+      [
+          'shell',
+          'appops',
+          'set',
+          'com.android.shell',
+          'android:mock_location',
+          'allow',
+      ],
+      env,
+      timeout_sec,
+  )
+
+
+def setup_test_location_provider(
+    env: env_interface.AndroidEnvInterface,
+    provider_name: str = _AW_TEST_LOCATION_PROVIDER,
+    timeout_sec: float = _DEFAULT_TIMEOUT_SECS,
+) -> adb_pb2.AdbResponse:
+  """Creates and enables a test location provider.
+
+  This method is idempotent: it first attempts to remove an existing provider
+  with the same name (ignoring errors if the provider doesn't exist), then adds
+  and enables it.
+
+  Args:
+    env: The Android environment interface.
+    provider_name: Test provider name.
+    timeout_sec: A timeout for the ADB operation.
+
+  Returns:
+    A response object containing the final ADB operation result.
+  """
+  # Attempt to remove stale provider, but silently ignore errors (e.g., if it
+  # doesn't exist). Only the add and enable steps are checked for success.
+  try:
+    issue_generic_request(
+        [
+            'shell',
+            'cmd',
+            'location',
+            'providers',
+            'remove-test-provider',
+            provider_name,
+        ],
+        env,
+        timeout_sec,
+    )
+  except Exception as e:  # pylint: disable=broad-except
+    logging.debug('Ignoring removal error (provider may not exist): %s', e)
+
+  response = issue_generic_request(
+      [
+          'shell',
+          'cmd',
+          'location',
+          'providers',
+          'add-test-provider',
+          provider_name,
+      ],
+      env,
+      timeout_sec,
+  )
+  if response.status != adb_pb2.AdbResponse.Status.OK:
+    return response
+
+  return issue_generic_request(
+      [
+          'shell',
+          'cmd',
+          'location',
+          'providers',
+          'set-test-provider-enabled',
+          provider_name,
+          'true',
+      ],
+      env,
+      timeout_sec,
+  )
+
+
+def set_test_location(
+    latitude: float,
+    longitude: float,
+    env: env_interface.AndroidEnvInterface,
+    provider_name: str = _AW_TEST_LOCATION_PROVIDER,
+    accuracy: float = 5.0,
+    timeout_sec: float = _DEFAULT_TIMEOUT_SECS,
+) -> adb_pb2.AdbResponse:
+  """Injects a mock location into a test provider.
+
+  Args:
+    latitude: Latitude coordinate.
+    longitude: Longitude coordinate.
+    env: The Android environment interface.
+    provider_name: Test provider name.
+    accuracy: Horizontal accuracy in meters.
+    timeout_sec: A timeout for the ADB operation.
+
+  Returns:
+    A response object containing the ADB operation result.
+  """
+  return issue_generic_request(
+      [
+          'shell',
+          'cmd',
+          'location',
+          'providers',
+          'set-test-provider-location',
+          provider_name,
+          '--location',
+          f'{latitude},{longitude}',
+          '--accuracy',
+          str(accuracy),
+      ],
+      env,
+      timeout_sec,
+  )
+
+
+def remove_test_location_provider(
+    env: env_interface.AndroidEnvInterface,
+    provider_name: str = _AW_TEST_LOCATION_PROVIDER,
+    timeout_sec: float = _DEFAULT_TIMEOUT_SECS,
+) -> adb_pb2.AdbResponse:
+  """Removes a test location provider.
+
+  Args:
+    env: The Android environment interface.
+    provider_name: Test provider name.
+    timeout_sec: A timeout for the ADB operation.
+
+  Returns:
+    A response object containing the ADB operation result.
+  """
+  return issue_generic_request(
+      [
+          'shell',
+          'cmd',
+          'location',
+          'providers',
+          'remove-test-provider',
+          provider_name,
+      ],
+      env,
+      timeout_sec,
+  )
 
 
 def end_call_if_active(

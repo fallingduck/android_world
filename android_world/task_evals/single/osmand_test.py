@@ -14,6 +14,7 @@
 
 import random
 from typing import Any
+from unittest import mock
 from xml.etree import ElementTree
 
 from absl.testing import absltest
@@ -231,6 +232,104 @@ class TestOsmAndTrack(absltest.TestCase):
     track_points = ((0, 1), (2, 3), (4, 5), (6, 7), (8, 9))
     interleaved_waypoints = ((2, 3), (8, 9))
     self.assertTrue(osmand._track_matches(track_points, interleaved_waypoints))
+
+  @mock.patch.object(osmand.adb_utils, 'check_ok', autospec=True)
+  @mock.patch.object(osmand.adb_utils, 'set_test_location', autospec=True)
+  @mock.patch.object(
+      osmand.adb_utils, 'setup_test_location_provider', autospec=True
+  )
+  @mock.patch.object(
+      osmand.adb_utils, 'enable_mock_location_permission', autospec=True
+  )
+  @mock.patch.object(osmand, '_lookup_target_waypoints', autospec=True)
+  @mock.patch.object(osmand, '_clear_tracks', autospec=True)
+  @mock.patch.object(osmand._OsmTaskEval, 'initialize_task', autospec=True)
+  def test_initialize_task_sets_up_mock_location(
+      self,
+      mock_base_initialize_task,
+      mock_clear_tracks,
+      mock_lookup_target_waypoints,
+      mock_enable_mock_location_permission,
+      mock_setup_test_location_provider,
+      mock_set_test_location,
+      mock_check_ok,
+  ):
+    del mock_base_initialize_task
+    params = {'waypoints': ['Schaan, Liechtenstein', 'Triesen, Liechtenstein']}
+    track_eval = osmand.OsmAndTrack(params=params)
+
+    mock_env = mock.MagicMock()
+    mock_env.controller = object()
+
+    permission_response = mock.MagicMock()
+    provider_response = mock.MagicMock()
+    location_response = mock.MagicMock()
+
+    mock_lookup_target_waypoints.return_value = [
+        (47.1663432, 9.5103085),
+        (47.106997, 9.5274854),
+    ]
+    mock_enable_mock_location_permission.return_value = permission_response
+    mock_setup_test_location_provider.return_value = provider_response
+    mock_set_test_location.return_value = location_response
+
+    track_eval.initialize_task(mock_env)
+
+    mock_clear_tracks.assert_called_once_with(mock_env.controller)
+    mock_lookup_target_waypoints.assert_called_once_with(params['waypoints'])
+    mock_enable_mock_location_permission.assert_called_once_with(
+        mock_env.controller
+    )
+    mock_setup_test_location_provider.assert_called_once_with(mock_env.controller)
+    mock_set_test_location.assert_called_once_with(
+        47.1663432, 9.5103085, mock_env.controller
+    )
+    mock_check_ok.assert_has_calls([
+        mock.call(
+            permission_response,
+            (
+                'Failed to grant MOCK_LOCATION appop to com.android.shell before'
+                ' OsmAndTrack.'
+            ),
+        ),
+        mock.call(
+            provider_response,
+            'Failed to create and enable test location provider before OsmAndTrack.',
+        ),
+        mock.call(
+            location_response,
+            'Failed to inject initial waypoint location before OsmAndTrack.',
+        ),
+    ])
+
+  @mock.patch.object(osmand._OsmTaskEval, 'tear_down', autospec=True)
+  @mock.patch.object(
+      osmand.adb_utils, 'remove_test_location_provider', autospec=True
+  )
+  @mock.patch.object(osmand, '_clear_tracks', autospec=True)
+  def test_tear_down_cleans_up_test_provider(
+      self,
+      mock_clear_tracks,
+      mock_remove_test_location_provider,
+      mock_base_tear_down,
+  ):
+    del mock_base_tear_down
+    track_eval = osmand.OsmAndTrack(
+        params={'waypoints': ['Schaan, Liechtenstein', 'Triesen, Liechtenstein']}
+    )
+
+    mock_env = mock.MagicMock()
+    mock_env.controller = object()
+    mock_remove_test_location_provider.return_value = mock.MagicMock(
+        status=osmand.adb_pb2.AdbResponse.Status.OK
+    )
+
+    track_eval.tear_down(mock_env)
+
+    mock_clear_tracks.assert_called_once_with(mock_env.controller)
+    mock_remove_test_location_provider.assert_called_once_with(
+        mock_env.controller
+    )
 
 
 if __name__ == "__main__":

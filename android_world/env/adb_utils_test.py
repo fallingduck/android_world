@@ -123,6 +123,141 @@ Phone Id=0
     self.assertEqual(result.generic.output.decode(), 'Success')
 
 
+class MockLocationUtilsTest(AdbTestSetup):
+
+  def test_enable_mock_location_permission(self):
+    mock_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    self.mock_issue_generic_request.return_value = mock_response
+
+    result = adb_utils.enable_mock_location_permission(self.mock_env)
+
+    self.assertIs(result, mock_response)
+    self.mock_issue_generic_request.assert_called_once_with(
+        [
+            'shell',
+            'appops',
+            'set',
+            'com.android.shell',
+            'android:mock_location',
+            'allow',
+        ],
+        self.mock_env,
+        adb_utils._DEFAULT_TIMEOUT_SECS,
+    )
+
+  def test_setup_test_location_provider_happy_path(self):
+    remove_response = adb_pb2.AdbResponse(
+        status=adb_pb2.AdbResponse.Status.INTERNAL_ERROR
+    )
+    add_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    enable_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    self.mock_issue_generic_request.side_effect = [
+        remove_response,
+        add_response,
+        enable_response,
+    ]
+
+    result = adb_utils.setup_test_location_provider(self.mock_env)
+
+    self.assertIs(result, enable_response)
+    self.assertEqual(self.mock_issue_generic_request.call_count, 3)
+    self.mock_issue_generic_request.assert_has_calls([
+        mock.call(
+            [
+                'shell',
+                'cmd',
+                'location',
+                'providers',
+                'remove-test-provider',
+                'aw_gps',
+            ],
+            self.mock_env,
+            adb_utils._DEFAULT_TIMEOUT_SECS,
+        ),
+        mock.call(
+            [
+                'shell',
+                'cmd',
+                'location',
+                'providers',
+                'add-test-provider',
+                'aw_gps',
+            ],
+            self.mock_env,
+            adb_utils._DEFAULT_TIMEOUT_SECS,
+        ),
+        mock.call(
+            [
+                'shell',
+                'cmd',
+                'location',
+                'providers',
+                'set-test-provider-enabled',
+                'aw_gps',
+                'true',
+            ],
+            self.mock_env,
+            adb_utils._DEFAULT_TIMEOUT_SECS,
+        ),
+    ])
+
+  def test_setup_test_location_provider_returns_add_failure(self):
+    remove_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    add_response = adb_pb2.AdbResponse(
+        status=adb_pb2.AdbResponse.Status.INTERNAL_ERROR
+    )
+    self.mock_issue_generic_request.side_effect = [remove_response, add_response]
+
+    result = adb_utils.setup_test_location_provider(self.mock_env)
+
+    self.assertIs(result, add_response)
+    self.assertEqual(self.mock_issue_generic_request.call_count, 2)
+
+  def test_set_test_location(self):
+    mock_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    self.mock_issue_generic_request.return_value = mock_response
+
+    result = adb_utils.set_test_location(47.141, 9.521, self.mock_env)
+
+    self.assertIs(result, mock_response)
+    self.mock_issue_generic_request.assert_called_once_with(
+        [
+            'shell',
+            'cmd',
+            'location',
+            'providers',
+            'set-test-provider-location',
+            'aw_gps',
+            '--location',
+            '47.141,9.521',
+            '--accuracy',
+            '5.0',
+        ],
+        self.mock_env,
+        adb_utils._DEFAULT_TIMEOUT_SECS,
+    )
+
+  def test_remove_test_location_provider(self):
+    mock_response = adb_pb2.AdbResponse(status=adb_pb2.AdbResponse.Status.OK)
+    self.mock_issue_generic_request.return_value = mock_response
+
+    result = adb_utils.remove_test_location_provider(self.mock_env)
+
+    self.assertIs(result, mock_response)
+    self.mock_issue_generic_request.assert_called_once_with(
+        [
+            'shell',
+            'cmd',
+            'location',
+            'providers',
+            'remove-test-provider',
+            'aw_gps',
+        ],
+        self.mock_env,
+        adb_utils._DEFAULT_TIMEOUT_SECS,
+    )
+
+
 class AdbSettingsTest(AdbTestSetup):
 
   def test_set_default_app(self):
