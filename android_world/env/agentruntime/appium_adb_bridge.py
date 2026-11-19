@@ -78,6 +78,11 @@ _SMS_DB_PATH = (
 # Device-side `emu sms send` replacement baked into SmartRun redroid images.
 _SMS_INJECT_TOOL = '/system/bin/smartrun-sms-inject'
 
+# Probe for the tool.  `mobile: shell` raises on a non-zero exit status, so
+# the trailing `true` keeps the probe at exit 0 whether or not the tool exists;
+# only stdout tells the two cases apart.
+_SMS_INJECT_TOOL_PROBE = f'[ -x {_SMS_INJECT_TOOL} ] && echo yes; true'
+
 
 def _b64(text: str) -> str:
   return base64.b64encode(text.encode('utf-8')).decode('ascii')
@@ -129,6 +134,9 @@ class AppiumAdbBridge:
 
   # Subclass must set this.
   _appium_env: 'AppiumEnv'
+
+  # Cached result of the smartrun-sms-inject probe; None = not probed yet.
+  _sms_inject_tool_available: bool | None = None
 
   # -------------------------------------------------------------------------
   # Public entry point
@@ -191,8 +199,8 @@ class AppiumAdbBridge:
       args = args[1:]
 
     # Intercept 'emu sms send <phone> <message>' which is an emulator console
-    # command that cannot be executed via mobile: shell.  Translate it into
-    # sqlite3 + content-provider operations that achieve the same result.
+    # command that cannot be executed via mobile: shell.  Translate it into a
+    # direct write of a received SMS (see _inject_sms_via_sqlite).
     if (len(args) >= 4
         and args[0].lower() == 'emu'
         and args[1].lower() == 'sms'
@@ -209,14 +217,28 @@ class AppiumAdbBridge:
         )
     )
 
+  def _has_sms_inject_tool(self) -> bool:
+    """Whether the image ships smartrun-sms-inject (probed once, then cached).
+
+    The image does not change during a session, so one probe per bridge
+    instance is enough; tasks inject several messages each.  A probe that
+    raises (e.g. Appium session lost) is not cached and propagates.
+    """
+    if self._sms_inject_tool_available is None:
+      self._sms_inject_tool_available = (
+          'yes' in self._appium_env.shell(_SMS_INJECT_TOOL_PROBE)
+      )
+    return self._sms_inject_tool_available
+
   def _inject_sms_via_sqlite(
       self, phone: str, message: str
   ) -> adb_pb2.AdbResponse:
     """Inject an incoming SMS by writing directly to the telephony database.
 
-    This is a fallback for environments where ``emu sms send`` is unavailable
-    (e.g. sandbox/redroid without emulator console access).  If the image
-    ships ``/system/bin/smartrun-sms-inject`` it is used.  Otherwise:
+    This replaces ``emu sms send`` in environments without an emulator console
+    (e.g. sandbox/redroid).  If the image ships
+    ``/system/bin/smartrun-sms-inject`` (SmartRun redroid >= v33.3) it is
+    used.  Otherwise this falls back to:
 
       1. Query ``content://mms-sms/threadID?recipient=<phone>`` to obtain or
          create a conversation thread.
@@ -236,16 +258,17 @@ class AppiumAdbBridge:
     )
     shell = self._appium_env.shell
 
-    # Preferred path: the device-side tool shipped in SmartRun redroid images
-    # (>= v33.3).  It handles thread creation and the FTS/trusted_schema quirks
-    # itself.  Arguments go base64-encoded so no quoting survives to the
-    # device shell, whatever the message contains.
-    if 'yes' in shell(f'test -x {_SMS_INJECT_TOOL} && echo yes'):
+    # Preferred path: the device-side tool.  It handles thread creation and
+    # the FTS/trusted_schema quirks itself.  Arguments go base64-encoded so no
+    # quoting survives to the device shell, whatever the message contains.
+    # `echo rc=$?` keeps the command at exit 0 (mobile: shell raises
+    # otherwise) and carries the tool's own exit status in stdout.
+    if self._has_sms_inject_tool():
       output = shell(
           f'{_SMS_INJECT_TOOL} --b64 {_b64(phone)} {_b64(message)}; '
           'echo rc=$?'
       )
-      if 'rc=0' not in output:
+      if not re.search(r'^rc=0\r?$', output, re.MULTILINE):
         return _error_response(f'smartrun-sms-inject failed: {output!r}')
       logging.info('SMS injected via %s: from=%s', _SMS_INJECT_TOOL, phone)
       return _ok_response(
